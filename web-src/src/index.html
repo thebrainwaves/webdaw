@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; font-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>WebDAW</title>
+<meta name="description" content="Browser-based DAW: session clips, arrangement recording, built-in effects, auto-mix.">
+<meta name="theme-color" content="#1e1e1e">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="./icons/icon-32.png">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="WebDAW">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<svg width="0" height="0" class="defs" aria-hidden="true" focusable="false"><defs><linearGradient id="kgrad" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#8B5CF6"/><stop offset="1" stop-color="#EF4444"/></linearGradient></defs></svg>
+<header id="topbar">
+  <div class="brand"><span class="logo"><svg class="ico ico-logo" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M6.5 12h2l1.5-4.5 3 9 1.5-4.5h3"/></svg></span><span id="projName" class="proj-name">WebDAW</span><span id="saveState" class="save-state" title="• = unsaved changes (auto-saves in a moment)"></span></div>
+  <div class="transport">
+    <button id="btnPlay" title="Play/Stop (Space)" aria-label="Play"><svg class="ico ico-play" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7.5 5.2v13.6L18.5 12z" fill="currentColor" stroke="none"/></svg></button>
+    <button id="btnStop" title="Stop (press twice: return to start)" aria-label="Stop"><svg class="ico ico-stop" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="6.5" y="6.5" width="11" height="11" rx="1" fill="currentColor" stroke="none"/></svg></button>
+    <button id="btnRec" class="rec" title="Arrangement record (R): records all armed tracks onto the timeline" aria-label="Record"><svg class="ico ico-record" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="6" fill="currentColor" stroke="none"/></svg></button>
+    <button id="btnAutoRec" class="autorec adv" title="Auto-record: waits until an armed input gets loud, then records (with pre-roll). Threshold in Preferences." aria-label="Auto record">AUTO</button>
+    <button id="btnMetro" title="Metronome (M)" aria-label="Metronome" class="metro adv">MET</button>
+    <label class="bpm" title="Tempo in beats per minute">BPM <input id="bpm" type="number" min="40" max="300" step="0.1" value="120" inputmode="decimal"></label>
+    <button id="btnTap" class="tap" title="Tap tempo (T): tap 3–8 times on the beat" aria-label="Tap tempo">TAP</button>
+    <button id="btnTempo" class="tempo-btn" title="Auto-timing: detect the band's tempo, follow it live, lock it" aria-label="Auto-timing">≈</button>
+    <div id="posDisplay" class="pos" title="Position: bar.beat.sixteenth">1.1.1</div>
+  </div>
+  <div class="hist"><button id="btnUndo" class="btn-undo" title="Undo (Ctrl/Cmd+Z)" aria-label="Undo" disabled><svg class="ico ico-undo" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button><button id="btnRedo" class="btn-redo" title="Redo (Ctrl/Cmd+Shift+Z)" aria-label="Redo" disabled><svg class="ico ico-redo" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button></div>
+  <div class="views"><button data-view="session" class="on" title="Session view: clip launcher and mixer">Session</button><button data-view="arrange" title="Arrangement view: timeline">Arrange</button></div>
+  <button id="btnAutoMix" class="automix" title="Auto-Mix setup: tell the app what each track is (or let it suggest), then it sets up EQ, compression and effects">Auto-Mix</button>
+  <button id="btnEasy" class="tog" title="Easy Mode: fewer controls, bigger labels">Easy</button>
+  <button id="btnHelp" class="tog" title="Help mode: tap any control to see what it does" aria-label="Help">?</button>
+  <canvas id="masterScope" class="scope top" aria-label="Master waveform (oscilloscope)" title="Master output waveform"></canvas><canvas id="masterMeterTop" class="meter h top" aria-label="Master level"></canvas>
+  <button id="btnMenu" class="menu-btn" aria-label="Menu" title="Menu: projects, export/import, settings, preferences"><svg class="ico ico-menu" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+  <div id="menu" class="dropdown"></div>
+</header>
+<main id="main">
+  <section id="sessionView" class="view"></section>
+  <section id="arrangeView" class="view" hidden></section>
+</main>
+<section id="devicePanel">
+  <div id="devHead" class="dev-head"></div>
+  <div id="devices" class="devices"></div>
+</section>
+<div id="startOverlay">
+  <div class="start-card">
+    <div class="logo big"><svg class="ico ico-logo" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M6.5 12h2l1.5-4.5 3 9 1.5-4.5h3"/></svg></div>
+    <h1>WebDAW</h1>
+    <p>Session clips · live recording · effects · auto-mix</p>
+    <button id="startBtn">Tap to start audio</button>
+    <p id="startMsg" class="hint">Audio starts after a tap (required by iOS/Android browsers). Microphone access is only requested when you arm a track.</p>
+  </div>
+</div>
+<div id="lockOverlay" hidden>
+  <div class="start-card">
+    <div class="logo big"><svg class="ico ico-logo" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M6.5 12h2l1.5-4.5 3 9 1.5-4.5h3"/></svg></div>
+    <h2>Locked</h2>
+    <input id="pinInput" type="password" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="PIN" aria-label="PIN">
+    <button id="pinBtn" class="primary">Unlock</button>
+    <p id="pinMsg" class="hint">Casual PIN lock — not encryption.</p>
+  </div>
+</div>
+<dialog id="dlg"></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+<input type="file" id="fileProject" accept=".zip,.webdaw,.json,.enc,application/zip,application/json,application/octet-stream" hidden>
+<input type="file" id="fileAudio" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac" multiple hidden>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>

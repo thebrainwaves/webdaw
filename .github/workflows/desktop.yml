@@ -1,0 +1,94 @@
+# Builds the WebDAW desktop app for macOS (universal .dmg), Windows (.msi + NSIS .exe)
+# and Linux (.deb + .AppImage). On a pushed tag like v0.3.1 it drafts a GitHub Release
+# with all installers attached; on manual runs it just uploads workflow artifacts.
+#
+# Expected repo layout (see README): web app source in ./web-src (built with
+# `node tools/build.mjs` into ./web-src/dist) and this shell in ./apps.
+name: Desktop app
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+          - platform: windows-latest
+            args: ''
+          - platform: ubuntu-22.04
+            args: --bundles deb,appimage
+    runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: apps
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/src-tauri -> target
+
+      - name: Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev
+
+      - name: Install
+        run: npm ci || npm install
+
+      - name: Build web app into apps/web
+        run: node scripts/sync-web.mjs ../web-src
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # --- macOS signing / notarization (optional; unsigned builds work but Gatekeeper warns) ---
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}                 # base64 .p12
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}       # "Developer ID Application: ..."
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}                       # app-specific password
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # --- Windows code signing (optional; unsigned builds trigger SmartScreen) ---
+          # Configure bundle.windows.certificateThumbprint / signCommand in tauri.conf.json.
+        with:
+          projectPath: apps
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: ${{ github.ref_type == 'tag' && format('WebDAW {0}', github.ref_name) || '' }}
+          releaseBody: 'Desktop installers for WebDAW. macOS: open the .dmg. Windows: run the .msi or -setup.exe. Linux: .deb or .AppImage (chmod +x).'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Upload artifacts (manual runs)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: webdaw-${{ matrix.platform }}
+          path: |
+            apps/src-tauri/target/**/release/bundle/dmg/*.dmg
+            apps/src-tauri/target/**/release/bundle/msi/*.msi
+            apps/src-tauri/target/**/release/bundle/nsis/*.exe
+            apps/src-tauri/target/**/release/bundle/deb/*.deb
+            apps/src-tauri/target/**/release/bundle/appimage/*.AppImage
+          if-no-files-found: ignore

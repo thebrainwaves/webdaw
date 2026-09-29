@@ -1,0 +1,6 @@
+node_modules/
+web/
+src-tauri/target/
+src-tauri/gen/
+screenshots/console.log
+release/

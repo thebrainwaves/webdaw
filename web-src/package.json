@@ -1,0 +1,23 @@
+{
+  "name": "webdaw",
+  "version": "1.0.0",
+  "description": "",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "serve": "node tools/serve.mjs dist 8080 /",
+    "dev": "node tools/serve.mjs src 8080 /",
+    "serve:subpath": "node tools/serve.mjs dist 8080 /daw/",
+    "test": "node tests/e2e.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "playwright-core": "1.55"
+  },
+  "private": true,
+  "type": "module"
+}

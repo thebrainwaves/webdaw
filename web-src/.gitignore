@@ -1,0 +1,3 @@
+node_modules/
+tests/exported-test.webdaw.zip
+tests/last-results-*.json
