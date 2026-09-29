@@ -31,19 +31,53 @@ export function newTrack(project, name, kind = 'audio', instType = 'synth') {
 }
 
 // --------------------------------------------------------------- IndexedDB
-const DB_NAME = 'webdaw', DB_VER = 1;
-function openDB() {
+// Auduio was called WebDAW before v0.3.1: projects saved under the old database name are copied into the
+// new one the first time it is opened (the old database is left untouched, so nothing can be lost).
+const DB_NAME = 'auduio', OLD_DB_NAME = 'webdaw', DB_VER = 1, STORES = ['projects', 'buffers', 'meta'];
+function openNamed(name, version) {
   return new Promise((resolve, reject) => {
-    const r = indexedDB.open(DB_NAME, DB_VER);
-    r.onupgradeneeded = () => {
+    const r = version ? indexedDB.open(name, version) : indexedDB.open(name);
+    r.onupgradeneeded = (e) => {
       const db = r.result;
+      if (name === OLD_DB_NAME && !e.oldVersion) { r._createdEmpty = true; return; } // probing: old DB did not exist
       if (!db.objectStoreNames.contains('projects')) db.createObjectStore('projects', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('buffers')) db.createObjectStore('buffers', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
     };
-    r.onsuccess = () => resolve(r.result);
+    r.onsuccess = () => { const db = r.result; db._createdEmpty = !!r._createdEmpty; resolve(db); };
     r.onerror = () => reject(r.error);
   });
+}
+const idbReq = (req) => new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+let migration = null;
+async function migrateOldDB(db) {
+  if (await idbReq(db.transaction('meta').objectStore('meta').get('migratedFromWebdaw'))) return;
+  const done = () => idbReq(db.transaction('meta', 'readwrite').objectStore('meta').put({ key: 'migratedFromWebdaw', value: Date.now() }));
+  if (indexedDB.databases) { try { const list = await indexedDB.databases(); if (!list.some((d) => d.name === OLD_DB_NAME)) return done(); } catch (e) { /* fall through and probe */ } }
+  const old = await openNamed(OLD_DB_NAME);
+  if (old._createdEmpty || !STORES.every((s) => old.objectStoreNames.contains(s))) {
+    old.close(); if (old._createdEmpty) indexedDB.deleteDatabase(OLD_DB_NAME); return done();
+  }
+  let copied = 0;
+  for (const store of STORES) {
+    const keys = await idbReq(old.transaction(store).objectStore(store).getAllKeys());
+    for (const k of keys) {
+      if (store === 'meta' && k === 'migratedFromWebdaw') continue;
+      const have = await idbReq(db.transaction(store).objectStore(store).count(k));
+      if (have) continue; // never overwrite data saved under the new name
+      const v = await idbReq(old.transaction(store).objectStore(store).get(k));
+      if (v !== undefined) { await idbReq(db.transaction(store, 'readwrite').objectStore(store).put(v)); if (store === 'projects') copied++; }
+    }
+  }
+  old.close();
+  await done();
+  if (copied) console.info(`Auduio: copied ${copied} project(s) saved by WebDAW`);
+}
+async function openDB() {
+  const db = await openNamed(DB_NAME, DB_VER);
+  if (!migration) migration = migrateOldDB(db).catch((e) => { console.warn('Could not copy projects from the old WebDAW storage', e); migration = null; });
+  await migration;
+  return db;
 }
 function tx(db, stores, mode, fn) {
   return new Promise((resolve, reject) => {
@@ -251,7 +285,7 @@ export async function importProjectFile(bytes, ctx) {
     files = await unzip(bytes);
     if (!files['project.json']) throw new Error('project.json missing in archive');
     raw = parse(files['project.json']);
-  } else throw new Error('Unknown file type (expected a .webdaw.zip project)');
+  } else throw new Error('Unknown file type (expected an .auduio.zip or .webdaw.zip project)');
   const { project, bufferIds } = validateProject(raw);
   // every audio file must be referenced by the project (reject unknown payloads)
   for (const name of Object.keys(files)) if (name !== 'project.json' && !bufferIds.has(name.slice(6, -4))) throw new Error(`Unreferenced file in archive: ${name}`);

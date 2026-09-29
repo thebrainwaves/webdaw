@@ -1,9 +1,10 @@
+import './storage-migrate.js';
 // Local security helpers (WebCrypto). Honest scope:
 // - PIN lock: a casual lock screen. The PIN is stored as a salted PBKDF2-SHA256 hash in localStorage.
 //   It does NOT encrypt projects in browser storage; anyone with device/devtools access can read them.
 // - Encrypted export: AES-256-GCM with a key derived from a password via PBKDF2-SHA256 (310k iterations).
 const enc = new TextEncoder();
-const PIN_KEY = 'webdaw.pin';
+const PIN_KEY = 'auduio.pin';
 export const cryptoAvailable = () => !!(globalThis.crypto && crypto.subtle && crypto.getRandomValues);
 const toB64 = (u8) => btoa(String.fromCharCode(...u8));
 const fromB64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
@@ -45,7 +46,7 @@ export async function encryptBytes(bytes, password) {
   return out;
 }
 export async function decryptBytes(bytes, password) {
-  if (!isEncrypted(bytes)) throw new Error('Not an encrypted WebDAW file');
+  if (!isEncrypted(bytes)) throw new Error('Not an encrypted Auduio file');
   const salt = bytes.slice(8, 24), iv = bytes.slice(24, 36), ct = bytes.slice(36);
   try { return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, await aesKey(password, salt), ct)); }
   catch (e) { throw new Error('Wrong password or damaged file.'); }

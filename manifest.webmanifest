@@ -1,7 +1,7 @@
 {
-  "name": "WebDAW",
-  "short_name": "WebDAW",
-  "description": "Browser-based DAW with session clips, recording, effects and auto-mix.",
+  "name": "Auduio",
+  "short_name": "Auduio",
+  "description": "Auduio: a multitrack recording machine with session clips, effects and auto-mix.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

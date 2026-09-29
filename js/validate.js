@@ -70,13 +70,19 @@ function clip(c, arrangement, bufferIds) {
   if (c.bpm != null) out.bpm = num(c.bpm, 20, 400, 120);
   if (c.transpose != null) out.transpose = num(c.transpose, -24, 24, 0);
   if (arrangement) Object.assign(out, { id: id(c.id, 'clip'), start: num(c.start, 0, 86400, 0), offset: num(c.offset, 0, 86400, 0), duration: num(c.duration, 0.001, 86400, 1) });
-  else { out.loopLength = num(c.loopLength, 0.01, 3600, 1); if (c.loopStart != null) out.loopStart = num(c.loopStart, 0, 3600, 0); }
+  if (arrangement && Array.isArray(c.takes) && c.takes.length > 1) {
+    // loop-recording takes: regions of the same recording
+    out.takes = c.takes.slice(0, 256).filter((k) => k && typeof k === 'object').map((k) => ({ start: num(k.start, 0, 86400, 0), offset: num(k.offset, 0, 86400, 0), duration: num(k.duration, 0.001, 86400, 1) }));
+    out.take = int(c.take, 0, out.takes.length - 1, out.takes.length - 1);
+  }
+  else if (!arrangement) { out.loopLength = num(c.loopLength, 0.01, 3600, 1); if (c.loopStart != null) out.loopStart = num(c.loopStart, 0, 3600, 0); }
   return out;
 }
 
 export function validateProject(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail('not an object');
-  if (raw.format !== 'webdaw-project') fail('not a WebDAW project');
+  // 'webdaw-project' is the file format id (kept from the WebDAW days so older files and versions stay compatible)
+  if (raw.format !== 'webdaw-project' && raw.format !== 'auduio-project') fail('not an Auduio project');
   if (![1, 2].includes(raw.version)) fail('unsupported version');
   const scenes = int(raw.scenes, 1, LIMITS.scenes, 8);
   const bufferIds = new Set(), seen = new Set();
@@ -88,6 +94,10 @@ export function validateProject(raw) {
     master: { volume: num(raw.master && raw.master.volume, -100, 12, 0), fx: fxList(raw.master && raw.master.fx) },
     tracks: [], midiMap: [], keyFollow: bool(raw.keyFollow), gridOffset: num(raw.gridOffset, -3600, 3600, 0),
   };
+  if (raw.loop && typeof raw.loop === 'object') {
+    const ls = num(raw.loop.start, 0, 86400, 0), le = num(raw.loop.end, 0, 86400, 0);
+    if (le > ls) p.loop = { on: bool(raw.loop.on), start: ls, end: le };
+  }
   for (const t of arr(raw.tracks, LIMITS.tracks, 'tracks')) {
     if (!t || typeof t !== 'object') fail('bad track');
     const tid = id(t.id, 'track'); if (seen.has(tid)) fail('duplicate track id'); seen.add(tid);

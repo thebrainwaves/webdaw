@@ -71,7 +71,7 @@ export class Engine {
     }
     // fallback: analyser-based meter
     const g = this.ctx.createGain();
-    const an = this.ctx.createAnalyser(); an.fftSize = 512; g.connect(an);
+    const an = this.ctx.createAnalyser(); an.fftSize = 512; g.connect(an); an.connect(this.sink); // an analyser that feeds nothing is not processed in every engine
     const arr = new Float32Array(512);
     g._poll = () => { an.getFloatTimeDomainData(arr); let p = 0, s = 0; for (const v of arr) { p = Math.max(p, Math.abs(v)); s += v * v; } const r = Math.sqrt(s / 512); this.meters.set(id, { peak: [p, p], rms: [r, r] }); };
     this._fallbackMeters = this._fallbackMeters || []; this._fallbackMeters.push(g);
@@ -133,6 +133,7 @@ export class Engine {
     if (n.inst) n.inst.dispose();
     n.adaptive.dispose();
     this.tracks.delete(id); this.meters.delete(id);
+    if (n && this._fallbackMeters) this._fallbackMeters = this._fallbackMeters.filter((g) => g !== n.meter); // a stale meter would keep writing 0 for this id
     if (this.project) this.routeAll();
   }
   // ------------------------------------------------------------------ group buses
@@ -147,7 +148,8 @@ export class Engine {
     const n = this.tracks.get(t.id); if (!n) return;
     const g = this.groupOf(t); const dest = g && this.tracks.get(g.id) ? this.tracks.get(g.id).input : this.master.input;
     if (n.dest === dest) return;
-    try { n.meter.disconnect(); } catch (e) {}
+    // disconnect only the old destination: a bare disconnect() would also cut the fallback meter's analyser tap
+    if (n.dest) { try { n.meter.disconnect(n.dest); } catch (e) {} }
     n.meter.connect(dest); n.dest = dest;
   }
   routeAll() { for (const t of this.project.tracks) this.routeTrack(t); this.syncMutes(); }
@@ -192,7 +194,42 @@ export class Engine {
     n.vol.gain.setTargetAtTime(dbToLin(t.volume), now, 0.01);
     if (n.pan.pan) n.pan.pan.setTargetAtTime(t.pan, now, 0.01);
     this.syncMutes();
-    n.monitor.gain.setTargetAtTime(t.monitor && t.arm ? 1 : 0, now, 0.01);
+    // explicit IN (monitor) always wins; otherwise the selected armed audio track is auto-monitored
+    const auto = this.autoMonitor !== false && this.autoMonitorId === t.id && t.kind !== 'midi';
+    n.monitor.gain.setTargetAtTime(t.arm && (t.monitor || auto) ? 1 : 0, now, 0.01);
+  }
+  setAutoMonitor(trackId, on = this.autoMonitor !== false) {
+    const prev = this.autoMonitorId; this.autoMonitorId = trackId; this.autoMonitor = on;
+    for (const id of new Set([prev, trackId])) { const t = id && this.project && this.project.tracks.find((x) => x.id === id); if (t) this.syncTrack(t); }
+  }
+  isMonitoring(t) { const n = this.tracks.get(t.id); return !!(n && n.monitor.gain.value > 0.5) || !!(t.arm && (t.monitor || (this.autoMonitor !== false && this.autoMonitorId === t.id && t.kind !== 'midi'))); }
+  // ---- audition: hear a clip / slot immediately through its track's chain (no quantize, independent of the transport)
+  auditionClip(t, c, { from = null, loop = null, key = '' } = {}) {
+    this.stopAudition();
+    const n = this.tracks.get(t.id); const buf = c && c.bufferId && this.buffers.get(c.bufferId); if (!n || !buf) return null;
+    const ctx = this.ctx, rate = Math.pow(2, (c.transpose || 0) / 12), isSlot = c.start == null;
+    const a = Math.max(0, isSlot ? (c.loopStart || 0) : (c.offset || 0));
+    const b = Math.min(buf.duration, a + (isSlot ? (c.loopLength || buf.duration - a) : c.duration * rate));
+    if (b - a < 0.005) return null;
+    const off = from != null ? Math.max(a, Math.min(b - 0.005, from)) : a;
+    const src = ctx.createBufferSource(); src.buffer = buf; src.playbackRate.value = rate;
+    const g = ctx.createGain(); const lvl = Math.pow(10, (c.gain || 0) / 20); const now = ctx.currentTime;
+    g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(lvl, now + 0.004);
+    src.connect(g); g.connect(n.input);
+    const lp = loop == null ? isSlot : loop;
+    if (lp) { src.loop = true; src.loopStart = a; src.loopEnd = b; src.start(now, off); } else src.start(now, off, b - off);
+    const A = this.audition = { key, t, c, src, g, startCtx: now, off, a, b, rate, loop: lp };
+    src.onended = () => { try { g.disconnect(); } catch (e) {} if (this.audition === A) { this.audition = null; this.emit('audition', null); } };
+    this.emit('audition', A); return A;
+  }
+  auditionPos() {
+    const A = this.audition; if (!A) return null; let p = A.off + Math.max(0, this.ctx.currentTime - A.startCtx) * A.rate;
+    if (A.loop && p > A.b) p = A.a + ((p - A.a) % (A.b - A.a)); return Math.min(p, A.b);
+  }
+  stopAudition() {
+    const A = this.audition; if (!A) return; this.audition = null; const now = this.ctx.currentTime;
+    try { A.g.gain.cancelScheduledValues(now); A.g.gain.setValueAtTime(A.g.gain.value, now); A.g.gain.linearRampToValueAtTime(0, now + 0.012); A.src.stop(now + 0.015); } catch (e) {}
+    this.emit('audition', null);
   }
   syncMutes() {
     const tr = this.project.tracks, anySolo = tr.some((t) => t.solo);
@@ -336,8 +373,60 @@ export class Engine {
   // ------------------------------------------------------------------ transport
   get barDur() { return (60 / this.project.bpm) * (this.project.beatsPerBar || 4); }
   get beatDur() { return 60 / this.project.bpm; }
-  position() { return this.playing ? this.startPos + (this.ctx.currentTime - this.startCtxTime) : this.startPos; }
-  posToTime(pos) { return this.startCtxTime + (pos - this.startPos); }
+  position() {
+    if (!this.playing) return this.startPos;
+    return this.loopSpan ? this.loopPosAt(this.ctx.currentTime) : this.startPos + (this.ctx.currentTime - this.startCtxTime);
+  }
+  posAtCtx(ctxT) { return this.loopSpan ? this.loopPosAt(ctxT) : this.startPos + (ctxT - this.startCtxTime); }
+  // next context time at which the transport reaches pos (loop-aware)
+  posToTime(pos) {
+    const Lp = this.loopSpan; if (!Lp || !this.playing) return this.startCtxTime + (pos - this.startPos);
+    const now = this.ctx.currentTime - 0.02, T1 = this.loopT1(), L = Lp.end - Lp.start;
+    if (pos >= this.startPos && pos < Lp.end) { const t = this.startCtxTime + (pos - this.startPos); if (t >= now) return t; }
+    if (pos < Lp.start || pos >= Lp.end) return this.startCtxTime + (pos - this.startPos);
+    const k = Math.max(0, Math.ceil((now - T1 - (pos - Lp.start)) / L));
+    return T1 + k * L + (pos - Lp.start);
+  }
+
+  // ------------------------------------------------------------------ arrangement loop
+  // project.loop = { on, start, end } (seconds). While playing, the loop is engaged when it is on and
+  // playback was anchored before its end (starting after the loop end plays straight through).
+  // Engaged playback is a pure function of the anchor: pass 0 runs startPos -> end, every later pass
+  // runs start -> end. Audio for each pass is scheduled sample-accurately ahead of time, so the wrap
+  // is seamless. Editing the loop while playing re-anchors at the current position.
+  loopRegion() { const L = this.project && this.project.loop; return L && L.on && L.end - L.start >= 0.05 ? L : null; }
+  loopT1() { return this.startCtxTime + (this.loopSpan.end - this.startPos); }
+  loopPosAt(ctxT) {
+    const Lp = this.loopSpan, T1 = this.loopT1();
+    if (ctxT < T1) return this.startPos + (ctxT - this.startCtxTime);
+    const L = Lp.end - Lp.start; return Lp.start + ((ctxT - T1) % L);
+  }
+  loopPassStart(k) { return k === 0 ? this.startCtxTime : this.loopT1() + (k - 1) * (this.loopSpan.end - this.loopSpan.start); }
+  loopPassIndex(ctxT) { const T1 = this.loopT1(); return ctxT < T1 ? 0 : 1 + Math.floor((ctxT - T1) / (this.loopSpan.end - this.loopSpan.start)); }
+  // split a context-time window into pieces of continuous transport position
+  loopSegments(c0, c1) {
+    if (!this.loopSpan) return [{ c0, c1, p0: this.startPos + (c0 - this.startCtxTime) }];
+    const out = []; let c = c0, guard = 0;
+    while (c < c1 - 1e-9 && guard++ < 64) {
+      const k = this.loopPassIndex(c), end = Math.min(c1, this.loopPassStart(k + 1));
+      out.push({ c0: c, c1: end, p0: this.loopPosAt(c), k }); c = end;
+    }
+    return out;
+  }
+  setLoop(loop) {
+    // loop object lives in project.loop; call after editing it (or after undo) to apply it to playback
+    if (loop) this.project.loop = loop;
+    const L = this.loopRegion(), cur = this.loopSpan;
+    const want = this.playing && L && this.position() < L.end - 1e-6 ? { start: L.start, end: L.end } : null;
+    if (!this.playing) { this.emit('loop'); return; }
+    if (!want && !cur) { this.emit('loop'); return; }
+    if (want && cur && want.start === cur.start && want.end === cur.end) { this.emit('loop'); return; }
+    // re-anchor at the current position with the new loop
+    const pos = this.position();
+    this.playing = false; this.tracks.forEach((n) => { this.stopTrackSources(n, 0, false); if (n.inst && !n.sessionMidi) n.inst.allOff(); });
+    this.startPos = Math.max(0, pos); this.play(null, 0, true);
+    this.emit('loop');
+  }
   // grid offset (s): bar lines sit at gridOffset + k*barDur. Set by tempo detection/follow so the
   // metronome lands on the band's downbeat; 0 for normal projects.
   get gridOffset() { return (this.project && this.project.gridOffset) || 0; }
@@ -347,11 +436,15 @@ export class Engine {
     let nb = o + Math.ceil((pos - o + 0.02) / bd) * bd;
     return this.posToTime(nb);
   }
-  play(fromPos, atCtxTime) {
+  play(fromPos, atCtxTime, keepAudition) {
+    if (!keepAudition) this.stopAudition();
     if (this.playing) return;
     this.resume();
     if (fromPos != null) this.startPos = fromPos;
-    this.startCtxTime = Math.max(this.ctx.currentTime + 0.06, atCtxTime || 0);
+    this.startCtxTime = Math.max(this.ctx.currentTime + (keepAudition ? 0.03 : 0.06), atCtxTime || 0);
+    const L = this.loopRegion();
+    this.loopSpan = L && this.startPos < L.end - 1e-6 ? { start: L.start, end: L.end } : null;
+    this.loopPassSched = 0; this.clickWM = null;
     this.playing = true;
     this.nextClick = null;
     this.midiSchedEnd = this.startCtxTime;
@@ -361,7 +454,7 @@ export class Engine {
   stop() {
     if (this.recording) this.stopRecording();
     const pos = this.position();
-    this.playing = false;
+    this.playing = false; this.loopSpan = null;
     this.tracks.forEach((n) => { this.stopTrackSources(n, 0, true); n.queued = null; if (n.inst) n.inst.allOff(); });
     if (this.autoRec.state === 'waiting') this.cancelAutoRecord();
     // pressing stop while stopped returns to start (like most DAWs)
@@ -387,32 +480,70 @@ export class Engine {
     const n = this.tracks.get(t.id); if (!n || !this.playing || n.sessionSource || n.sessionMidi) return;
     const now = this.ctx.currentTime + 0.03;
     n.sources.forEach((s) => { try { s.stop(now); } catch (e) {} }); n.sources = [];
+    if (this.loopSpan) return this.scheduleArrangement(t, null, Math.max(now, this.startCtxTime));
     this.scheduleArrangement(t, this.startPos + (now - this.startCtxTime));
   }
-  scheduleArrangement(t, fromPos) {
+  // Schedule a track's arrangement audio. Without a loop: from fromPos to the end. With an engaged loop:
+  // the rest of the current pass from context time fromCtx, plus any later passes already scheduled.
+  scheduleArrangement(t, fromPos, fromCtx) {
     const n = this.tracks.get(t.id); if (!n || n.sessionSource || n.sessionMidi) return;
-    const pos = fromPos != null ? fromPos : this.startPos;
+    const Lp = this.loopSpan;
+    if (!Lp) { const pos = fromPos != null ? fromPos : this.startPos; return this.schedArrSeg(t, n, pos, Infinity, this.posToTime(pos)); }
+    const c0 = fromCtx != null ? fromCtx : Math.max(this.startCtxTime, this.ctx.currentTime + 0.02);
+    const k = this.loopPassIndex(c0);
+    this.schedArrSeg(t, n, this.loopPosAt(c0), Lp.end, c0);
+    for (let j = k + 1; j <= (this.loopPassSched || 0); j++) this.schedArrSeg(t, n, Lp.start, Lp.end, this.loopPassStart(j));
+  }
+  // audio clips overlapping transport range [p0, p1), with position p0 heard at context time ctxAtP0
+  schedArrSeg(t, n, p0, p1, ctxAtP0) {
     for (const c of t.arrangement) {
       if (c.type === 'midi') continue; // MIDI clips are scheduled by the lookahead scheduler
       const buf = this.buffers.get(c.bufferId); if (!buf) continue;
-      const end = c.start + c.duration;
-      if (end <= pos) continue;
+      const s0 = Math.max(p0, c.start), e0 = Math.min(p1, c.start + c.duration);
+      if (e0 - s0 < 0.0005) continue;
       const src = this.ctx.createBufferSource(); src.buffer = buf;
       // transpose = repitch (tape-style: pitch and speed change together); timeline length stays c.duration
       const rate = Math.pow(2, (c.transpose || 0) / 12); src.playbackRate.value = rate;
       const g = this.ctx.createGain(); g.gain.value = dbToLin(c.gain || 0);
       src.connect(g).connect(n.input);
-      const when = Math.max(this.ctx.currentTime, this.posToTime(Math.max(pos, c.start)));
-      const offs = c.offset + Math.max(0, pos - c.start) * rate;
-      const dur = (c.duration - Math.max(0, pos - c.start)) * rate;
+      const when = Math.max(this.ctx.currentTime, ctxAtP0 + (s0 - p0));
+      const offs = c.offset + (s0 - c.start) * rate;
+      const dur = (e0 - s0) * rate;
       try { src.start(when, offs, dur); } catch (e) { continue; }
       src._clipId = c.id; src._gain = g;
+      src.onended = () => { const i = n.sources.indexOf(src); if (i >= 0) n.sources.splice(i, 1); try { g.disconnect(); } catch (e) {} };
       n.sources.push(src);
     }
+  }
+  // schedule the next loop pass(es) for every track shortly before they start
+  loopTick() {
+    const Lp = this.loopSpan; if (!Lp) return;
+    const horizon = this.ctx.currentTime + 0.35;
+    while (this.loopPassStart((this.loopPassSched || 0) + 1) < horizon) {
+      this.loopPassSched = (this.loopPassSched || 0) + 1;
+      const at = this.loopPassStart(this.loopPassSched);
+      for (const t of this.project.tracks) { const n = this.tracks.get(t.id); if (n && !n.sessionSource && !n.sessionMidi) this.schedArrSeg(t, n, Lp.start, Lp.end, at); }
+      this.emit('looppass', { k: this.loopPassSched, at });
+    }
+  }
+  // metronome while looping: click every beat whose (loop-mapped) time falls in the window
+  loopClicks(lat, ahead) {
+    const now = this.ctx.currentTime, bd = this.beatDur, o = this.gridOffset, bpb = this.project.beatsPerBar || 4;
+    const w0 = Math.max(this.clickWM != null ? this.clickWM : now - 0.005, now - 0.005);
+    if (ahead <= w0) return;
+    for (const sg of this.loopSegments(w0 + lat, ahead + lat)) {
+      const pEnd = sg.p0 + (sg.c1 - sg.c0);
+      for (let k = Math.ceil((sg.p0 - o - 1e-6) / bd); o + k * bd < pEnd - 1e-6; k++) {
+        const pos = o + k * bd, t = sg.c0 + (pos - sg.p0) - lat;
+        if (t >= now - 0.01) { this.click(t, ((k % bpb) + bpb) % bpb === 0); this.lastClickPos = pos; this.lastClickCtx = t; this.emit('click', { t, pos, k }); }
+      }
+    }
+    this.clickWM = ahead;
   }
   schedulerTick() {
     if (!this.ctx || !this.playing) return;
     this.pollMeters();
+    this.loopTick();
     this.scheduleMidi();
     if (!this.metronome && !this.countIn) return;
     const bd = this.beatDur, ahead = this.ctx.currentTime + 0.12, o = this.gridOffset, bpb = this.project.beatsPerBar || 4;
@@ -420,6 +551,7 @@ export class Engine {
     // (+ user click offset) so it is heard on the beat. After a tempo/offset change the index is
     // recomputed without re-clicking a beat that was already scheduled.
     const lat = (this.tempo.mode !== 'off' || this.project.gridOffset ? (this.ctx.outputLatency || this.ctx.baseLatency || 0) : 0) - this.tempo.clickOffsetMs / 1000;
+    if (this.loopSpan) { this.loopClicks(lat, ahead); return; }
     if (this.nextClick == null) {
       const from = Math.max(this.position(), this.lastClickPos != null && this.lastClickCtx > this.ctx.currentTime - 1 ? this.lastClickPos + bd * 0.5 : -Infinity);
       this.nextClick = Math.ceil((from - o - 0.001) / bd);
@@ -608,13 +740,15 @@ export class Engine {
         continue;
       }
       if (n.sessionSource) continue;
-      const p0 = this.startPos + (from - this.startCtxTime), p1 = this.startPos + (to - this.startCtxTime);
-      for (const c of t.arrangement) {
-        if (c.type !== 'midi' || c.start > p1 || c.start + c.duration < p0) continue;
-        for (const nt of c.notes) {
-          const off = nt.t * bd - (c.offset || 0); if (off < 0 || off >= c.duration) continue;
-          const pn = c.start + off;
-          if (pn >= p0 && pn < p1) n.inst.playNote(nt.n, nt.v, this.posToTime(pn), Math.min(nt.d * bd, c.duration - off));
+      for (const sg of this.loopSegments(from, to)) {
+        const p0 = sg.p0, p1 = p0 + (sg.c1 - sg.c0), lpEnd = this.loopSpan ? this.loopSpan.end : Infinity;
+        for (const c of t.arrangement) {
+          if (c.type !== 'midi' || c.start > p1 || c.start + c.duration < p0) continue;
+          for (const nt of c.notes) {
+            const off = nt.t * bd - (c.offset || 0); if (off < 0 || off >= c.duration) continue;
+            const pn = c.start + off;
+            if (pn >= p0 && pn < p1) n.inst.playNote(nt.n, nt.v, sg.c0 + (pn - p0), Math.min(nt.d * bd, c.duration - off, lpEnd - pn));
+          }
         }
       }
     }
@@ -705,12 +839,13 @@ export class Engine {
   // Arrangement ("live") recording of all armed tracks from the current playhead.
   async startRecording() {
     const armedAll = this.project.tracks.filter((t) => t.arm);
-    if (!armedAll.length) throw new Error('Arm at least one track (● button) to record.');
+    if (!armedAll.length) throw new Error('Arm at least one track (its round arm button) to record.');
     const armed = armedAll.filter((t) => t.kind !== 'midi');
     for (const t of armed) { const n = this.tracks.get(t.id); if (!n.inputChain) await this.attachInput(t); }
     if (!this.playing) this.play();
     const when = Math.max(this.ctx.currentTime, this.startCtxTime);
-    const startPos = this.startPos + (when - this.startCtxTime);
+    const startPos = this.posAtCtx(when);
+    this.recWhen = when; this.recLoop = this.loopSpan ? { ...this.loopSpan } : null;
     this.recTakes = armed.map((t) => {
       const n = this.tracks.get(t.id);
       const rec = this.makeRecorder(n);
@@ -726,7 +861,8 @@ export class Engine {
     if (!this.recording) return [];
     this.recording = false; this.autoRec.state = 'off';
     const when = this.ctx.currentTime;
-    this.emit('recstop', { stopPos: this.startPos + (when - this.startCtxTime) });
+    const passes = this.recLoop && this.loopSpan ? this.loopSegments(this.recWhen, when) : null;
+    this.emit('recstop', { stopPos: this.posAtCtx(when), loop: passes && passes.length > 1 ? this.recLoop : null, passes });
     const takes = this.recTakes || []; this.recTakes = null;
     takes.forEach((k) => k.rec.node.port.postMessage({ type: 'stop', time: when }));
     this.emit('transport');
@@ -746,7 +882,13 @@ export class Engine {
         continue;
       }
       const lat = Math.min(this.inputLatency(k.n), buf.duration);
-      results.push({ track: k.t, buffer: buf, startPos: k.startPos, offset: lat, duration: buf.duration - lat, warning: k.n.inputChain && k.n.inputChain.warning });
+      const r = { track: k.t, buffer: buf, startPos: k.startPos, offset: lat, duration: buf.duration - lat, warning: k.n.inputChain && k.n.inputChain.warning };
+      if (passes && passes.length > 1) {
+        // loop recording: one continuous buffer, one take per pass (each pass is a region of it)
+        r.takes = passes.map((sg) => { const off = lat + (sg.c0 - this.recWhen); return { start: sg.p0, offset: off, duration: Math.min(sg.c1 - sg.c0, buf.duration - off) }; }).filter((x) => x.duration > 0.05);
+        r.loop = this.recLoop;
+      }
+      results.push(r);
     }
     this.emit('recorded', results);
     return results;
