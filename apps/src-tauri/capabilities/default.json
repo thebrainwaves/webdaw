@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "WebDAW main window. The web app uses no Tauri APIs.",
+  "description": "Auduio main window. The web app uses no Tauri APIs.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

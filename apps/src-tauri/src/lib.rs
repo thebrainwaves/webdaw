@@ -1,4 +1,4 @@
-//! WebDAW desktop shell: a native window around the bundled WebDAW web app (../web).
+//! Auduio desktop shell: a native window around the bundled Auduio web app (../web).
 //! All audio work happens in the web app (Web Audio). The shell only has to make sure
 //! the webview is allowed to use the microphone / audio interface inputs.
 
@@ -13,12 +13,12 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running WebDAW");
+        .expect("error while running Auduio");
 }
 
 /// Linux (WebKitGTK): media capture is off by default and permission requests are denied
 /// unless handled. Turn on getUserMedia/enumerateDevices and grant audio capture requests
-/// (the app only ever asks for audio). WebDAW is a local app with no remote content.
+/// (the app only ever asks for audio). Auduio is a local app with no remote content.
 #[cfg(target_os = "linux")]
 fn enable_media(win: &tauri::WebviewWindow) {
     let _ = win.with_webview(|wv| {
@@ -29,8 +29,8 @@ fn enable_media(win: &tauri::WebviewWindow) {
             settings.set_enable_mediasource(true);
             settings.set_enable_webaudio(true);
             settings.set_media_playback_requires_user_gesture(false);
-            // WEBDAW_CONSOLE=1 prints the web app's console messages to stdout (diagnostics).
-            if std::env::var_os("WEBDAW_CONSOLE").is_some() {
+            // AUDUIO_CONSOLE=1 prints the web app's console messages to stdout (diagnostics).
+            if std::env::var_os("AUDUIO_CONSOLE").is_some() {
                 settings.set_enable_write_console_messages_to_stdout(true);
             }
         }

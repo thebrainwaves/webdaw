@@ -193,7 +193,7 @@ try {
   page.once('dialog', (d) => d.accept('TestRack'));
   await page.evaluate(() => [...document.querySelectorAll('#devices .device[data-type=rack] button')].find((b) => b.textContent.startsWith('Save preset')).click());
   await sleep(200);
-  const rp = await page.evaluate(() => ({ stored: !!JSON.parse(localStorage.getItem('webdaw.rackPresets') || '{}').TestRack, option: !![...document.querySelectorAll('#devHead .add-fx option')].find((o) => o.value === 'rack:TestRack') }));
+  const rp = await page.evaluate(() => ({ stored: !!JSON.parse(localStorage.getItem('auduio.rackPresets') || '{}').TestRack, option: !![...document.querySelectorAll('#devHead .add-fx option')].find((o) => o.value === 'rack:TestRack') }));
   ok('Rack preset save/load (local)', rp.stored && rp.option, JSON.stringify(rp));
   await page.screenshot({ path: path.join(shots, 'desktop-rack.png') });
 
@@ -392,7 +392,7 @@ try {
   await pinC.page.fill('#pinInput', '2468'); await pinC.page.click('#pinBtn');
   await pinC.page.waitForSelector('#lockOverlay', { state: 'hidden', timeout: 5000 }).catch(() => {});
   const unlocked = !(await pinC.page.isVisible('#lockOverlay')) && await pinC.page.isVisible('#startBtn');
-  const stored = await pinC.page.evaluate(() => localStorage.getItem('webdaw.pin'));
+  const stored = await pinC.page.evaluate(() => localStorage.getItem('auduio.pin'));
   ok('PIN lock: shown after reload, wrong PIN rejected, correct PIN unlocks; PIN stored only as PBKDF2 hash', lockShown && stillLocked && /wrong/i.test(msg) && unlocked && !stored.includes('2468'), JSON.stringify({ lockShown, stillLocked, msg, unlocked, stored: stored.slice(0, 80) }));
   await pinC.ctx.close();
 

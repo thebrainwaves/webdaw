@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>WebDAW records audio from your microphone or audio interface.</string>
+  <string>Auduio records audio from your microphone or audio interface.</string>
 </dict>
 </plist>

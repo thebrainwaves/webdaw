@@ -1,3 +1,4 @@
+import './storage-migrate.js';
 // Feature tiers — PLACEHOLDER ONLY. There are no payments, accounts or licence checks: the tier is
 // a local preference (Preferences → Tier) and every tier can be switched to freely for testing.
 // Edit this one file to change which feature belongs to which tier.
@@ -23,7 +24,7 @@ export const FEATURES = {
 // Auto-Mix roles available with 'automix.basic' only (full adds drum pieces, amp/acoustic variants, backing vox, "from bar")
 export const BASIC_ROLES = ['auto', 'drum_kit', 'bass_di', 'gtr_clean', 'gtr_crunch', 'gtr_highgain', 'vox_lead', 'keys', 'other'];
 
-const KEY = 'webdaw.tier';
+const KEY = 'auduio.tier';
 let current = (() => { try { const v = localStorage.getItem(KEY); return TIERS.includes(v) ? v : DEFAULT_TIER; } catch (e) { return DEFAULT_TIER; } })();
 const listeners = [];
 export const getTier = () => current;

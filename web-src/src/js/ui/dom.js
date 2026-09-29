@@ -1,3 +1,4 @@
+import '../storage-migrate.js';
 // Small DOM helpers + preferences + haptics shared by the UI modules.
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -21,7 +22,7 @@ export function toast(msg, ms = 2600) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
 // ------------------------------------------------------------------ preferences (localStorage)
-const PREF_KEY = 'webdaw.prefs';
+const PREF_KEY = 'auduio.prefs';
 const DEFAULTS = { easy: false, hc: false, haptics: true, guideDone: false, tutorialDone: false, phoneMode: 'auto', showTransients: true, autoRecThreshold: -40, autoRecPreroll: 1, sessionScale: 1 };
 export const prefs = (() => { try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(PREF_KEY) || '{}') }; } catch (e) { return { ...DEFAULTS }; } })();
 export function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch (e) {} }

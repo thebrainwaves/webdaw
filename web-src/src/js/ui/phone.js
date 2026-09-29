@@ -102,7 +102,24 @@ export function createPhone(api) {
       h('div', { class: 'ph-level' }, h('span', { class: 'b2' }, 'Microphone level'), h('div', { class: 'ph-meter' }, h('i'))),
       h('div', { class: 'ph-row' },
         big(engine.autoRec.state !== 'off' ? 'Auto-start: on' : 'Auto-start: off', 'Start recording when I play', async () => { if (t && !t.arm && t.kind !== 'midi') await api.toggleArm(t); await api.toggleAutoRecord(); render(); }, engine.autoRec.state !== 'off' ? 'on' : ''),
-        big(engine.metronome ? 'Click: on' : 'Click: off', 'Metronome', () => { engine.metronome = !engine.metronome; engine.nextClick = null; api.updateTransportUI(); render(); }, engine.metronome ? 'on' : ''))];
+        big(engine.metronome ? 'Click: on' : 'Click: off', 'Metronome', () => { engine.metronome = !engine.metronome; engine.nextClick = null; api.updateTransportUI(); render(); }, engine.metronome ? 'on' : '')),
+      loopPanel()];
+  }
+  // Loop: one big toggle plus "loop these bars" (start bar and length). Recording while the loop is on keeps every pass as a take.
+  function loopPanel() {
+    const L = api.loopInfo(), lens = [1, 2, 4, 8];
+    const set = (bar, bars, on = true) => { haptic(8); api.setLoopBars(bar, bars, on); render(); };
+    return h('div', { class: 'ph-loop', role: 'group', 'aria-label': 'Loop' },
+      h('div', { class: 'ph-loop-row' },
+        h('button', { class: 'ph-loop-toggle' + (L.on ? ' on' : ''), 'aria-pressed': String(L.on), 'aria-label': 'Loop', onclick: () => { haptic(8); api.toggleLoop(); render(); } }, icon('loop'), L.on ? 'Loop: on' : 'Loop: off'),
+        h('button', { class: 'ph-loop-here', title: 'Loop the bars at the playhead', onclick: () => set(Math.floor((engine.barFloor(engine.position()) - engine.gridOffset) / engine.barDur + 1e-6) + 1, Math.max(1, Math.round(L.bars)) || 4) }, 'Loop here')),
+      h('div', { class: 'ph-loop-row' }, h('span', { class: 'lbl2' }, 'From bar'),
+        h('button', { class: 'ph-loop-prev', 'aria-label': 'Loop starts one bar earlier', onclick: () => set(L.startBar - 1, L.bars, L.on) }, icon('chevLeft')),
+        h('span', { class: 'val ph-loop-start' }, String(L.startBar)),
+        h('button', { class: 'ph-loop-next', 'aria-label': 'Loop starts one bar later', onclick: () => set(L.startBar + 1, L.bars, L.on) }, icon('chevRight'))),
+      h('div', { class: 'ph-loop-row' }, h('span', { class: 'lbl2' }, 'Bars'),
+        lens.map((n) => h('button', { class: 'ph-loop-len' + (Math.abs(L.bars - n) < 0.01 ? ' on' : ''), 'aria-pressed': String(Math.abs(L.bars - n) < 0.01), 'aria-label': `Loop ${n} bar${n > 1 ? 's' : ''}`, onclick: () => set(L.startBar, n) }, String(n)))),
+      L.on ? h('span', { class: 'ph-hint' }, `Looping ${L.label}. Recording now keeps every pass as a take.`) : null);
   }
   async function recordPress(t) {
     haptic(16);

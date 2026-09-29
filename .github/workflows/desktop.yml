@@ -1,4 +1,4 @@
-# Builds the WebDAW desktop app for macOS (universal .dmg), Windows (.msi + NSIS .exe)
+# Builds the Auduio desktop app for macOS (universal .dmg), Windows (.msi + NSIS .exe)
 # and Linux (.deb + .AppImage). On a pushed tag like v0.3.1 it drafts a GitHub Release
 # with all installers attached; on manual runs it just uploads workflow artifacts.
 #
@@ -74,8 +74,8 @@ jobs:
         with:
           projectPath: apps
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: ${{ github.ref_type == 'tag' && format('WebDAW {0}', github.ref_name) || '' }}
-          releaseBody: 'Desktop installers for WebDAW. macOS: open the .dmg. Windows: run the .msi or -setup.exe. Linux: .deb or .AppImage (chmod +x).'
+          releaseName: ${{ github.ref_type == 'tag' && format('Auduio {0}', github.ref_name) || '' }}
+          releaseBody: 'Desktop installers for Auduio. macOS: open the .dmg. Windows: run the .msi or -setup.exe. Linux: .deb or .AppImage (chmod +x).'
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -84,7 +84,7 @@ jobs:
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
-          name: webdaw-${{ matrix.platform }}
+          name: auduio-${{ matrix.platform }}
           path: |
             apps/src-tauri/target/**/release/bundle/dmg/*.dmg
             apps/src-tauri/target/**/release/bundle/msi/*.msi

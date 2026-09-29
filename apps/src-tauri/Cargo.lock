@@ -77,6 +77,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "auduio"
+version = "0.3.1"
+dependencies = [
+ "tauri",
+ "tauri-build",
+ "webkit2gtk",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3783,15 +3792,6 @@ dependencies = [
  "phf_codegen",
  "string_cache",
  "string_cache_codegen",
-]
-
-[[package]]
-name = "webdaw"
-version = "0.3.1"
-dependencies = [
- "tauri",
- "tauri-build",
- "webkit2gtk",
 ]
 
 [[package]]

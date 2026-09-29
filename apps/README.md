@@ -1,29 +1,59 @@
-# WebDAW desktop app (Tauri 2)
+# Auduio desktop and mobile apps
 
-This is a native desktop shell around the WebDAW web app for macOS, Windows and Linux. The app itself is the unchanged web build. The shell adds a real window, a dock/taskbar icon, installers, and microphone access.
+These are native shells around the Auduio web app (formerly WebDAW), which runs unchanged inside each one:
+- **Desktop (Tauri 2):** macOS, Windows and Linux.
+- **Mobile (Capacitor 8):** Android and iOS.
 
-## Build locally
-Requirements: Node 20 or newer, Rust stable, and the platform prerequisites from https://tauri.app/start/prerequisites/.
+The shells add a real window or app icon, installers, and microphone access. The service worker is skipped inside the shells, because the files are bundled.
+
+## Web app
+`node scripts/sync-web.mjs <web source dir>` builds the web app and copies its `dist/` into `./web`. The default source dir is `../daw`, or `$AUDUIO_SRC`. On the app-source branch it is `../web-src`.
+
+## Desktop
+Requirements: Node 20 or newer, Rust stable, and the prerequisites from https://tauri.app/start/prerequisites/.
 On Debian/Ubuntu: `libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf`.
 
 ```sh
 npm install
-node scripts/sync-web.mjs ../daw   # builds the web app and copies dist/ to ./web
-npx tauri build                    # installers go to src-tauri/target/release/bundle/
-npx tauri dev                      # run it in a window without packaging
+node scripts/sync-web.mjs ../daw
+npx tauri build                              # installers go to src-tauri/target/release/bundle/
+npx tauri build --bundles deb,appimage       # Linux only
+scripts/smoke-linux.sh                       # headless launch test (Xvfb): screenshots + page console
 ```
 
-Linux only: `npx tauri build --bundles deb,appimage`. `scripts/smoke-linux.sh` launches the build on a virtual display, saves screenshots and captures the page console (`WEBDAW_CONSOLE=1`).
+Microphone access by platform:
+- **macOS:** `NSMicrophoneUsageDescription` in `src-tauri/Info.plist`, plus the audio-input entitlement in `entitlements.plist`.
+- **Windows:** WebView2 shows its own prompt.
+- **Linux:** `src-tauri/src/lib.rs` turns on WebKitGTK media streams and grants audio-capture requests.
 
-## Microphone
-- **macOS:** `Info.plist` has `NSMicrophoneUsageDescription`, and `entitlements.plist` has `com.apple.security.device.audio-input`. macOS asks for permission the first time you record.
-- **Windows:** WebView2 shows its own permission prompt.
-- **Linux (WebKitGTK):** `src/lib.rs` turns on media streams and grants audio-capture and device-info permission requests. Audio goes through GStreamer and PulseAudio/PipeWire. The AppImage bundles the GStreamer plugins.
+## Android
+Requirements: Node 22 or newer (Capacitor 8), JDK 21 and the Android SDK (platform 36, build-tools 35 and 36).
 
-## CI and releases
-`.github/workflows/desktop.yml` builds a universal macOS .dmg, a Windows .msi and NSIS .exe, and a Linux .deb and .AppImage. When you push a `v*` tag it drafts a GitHub Release with the installers attached. Signing and notarization secrets are commented-out placeholders.
+```sh
+npm install
+node scripts/sync-web.mjs ../daw && npx cap sync android
+cd android && ./gradlew assembleDebug        # -> android/app/build/outputs/apk/debug/app-debug.apk
+```
 
-## Install
-- **macOS:** open the .dmg and drag WebDAW to Applications. Unsigned builds need right-click, then Open, the first time.
-- **Windows:** run `WebDAW_x.y.z_x64-setup.exe` or the `.msi`. If SmartScreen warns about an unsigned build, choose More info, then Run anyway.
-- **Linux:** run `sudo apt install ./WebDAW_0.3.1_amd64.deb`, or `chmod +x WebDAW_0.3.1_amd64.AppImage && ./WebDAW_0.3.1_amd64.AppImage`.
+What the Android shell adds:
+- **Permissions:** `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS`. Capacitor's WebChromeClient asks for the runtime permission when the page calls getUserMedia, then grants the WebView request.
+- **`MainActivity`:** allows media playback without a user gesture, routes the volume keys to media volume, and keeps the screen on while the app is in front. Android pauses the WebView, and with it a running recording, when the screen goes off.
+- **Orientation:** portrait and landscape.
+- **Icons and splash:** generated from `daw/src/icons`.
+
+Sideloading steps for users are in `INSTALL-ANDROID.md`. Debug APKs are signed with the build machine's debug key (`~/.android/debug.keystore`). An update installs over an existing app only if it is signed with the same key, so for real distribution create a release keystore (see the comments in `.github/workflows/android.yml`).
+
+## iOS (prepared, not built here)
+The `ios/` project has:
+- `NSMicrophoneUsageDescription`
+- `UIBackgroundModes: audio`, so a recording keeps going when the screen locks
+- portrait and landscape orientations
+- the app icon and splash
+
+To build on a Mac with Xcode 16 or newer: `npx cap sync ios && npx cap open ios`. Then set your Team under Signing & Capabilities and run on a device.
+
+## CI
+- `.github/workflows/desktop.yml` builds a macOS universal .dmg, a Windows .msi and NSIS .exe, and a Linux .deb and .AppImage.
+- `.github/workflows/android.yml` builds a debug APK.
+- On a `v*` tag, both attach their files to a draft GitHub Release.
+- Signing secrets are commented-out placeholders.

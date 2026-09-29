@@ -1,4 +1,5 @@
-// WebDAW v0.3.1 — UI controller.
+import './storage-migrate.js';
+// Auduio v0.3.1 — UI controller.
 import { Engine } from './audio/engine.js';
 import { EFFECT_TYPES, EASY_PARAMS, EFFECT_HELP, PARAM_HELP } from './audio/effects.js';
 import { INSTRUMENT_TYPES, PAD_ORDER, wavetableFrame } from './audio/instruments.js';
@@ -188,6 +189,8 @@ function showHelpBubble(el, x, y) {
 // ------------------------------------------------------------------ project lifecycle
 function normalise(project) {
   project.key = project.key || { root: 0, scale: 'major' }; project.midiMap = project.midiMap || []; project.gridOffset = +project.gridOffset || 0;
+  { const bar = (60 / (project.bpm || 120)) * (project.beatsPerBar || 4), L = project.loop;
+    project.loop = L && isFinite(L.start) && isFinite(L.end) && L.end > L.start ? { on: !!L.on, start: Math.max(0, +L.start), end: +L.end } : { on: false, start: project.gridOffset, end: project.gridOffset + 4 * bar }; }
   for (const t of project.tracks) {
     t.kind = t.kind || 'audio'; t.slots = t.slots || []; while (t.slots.length < project.scenes) t.slots.push(null);
     t.arrangement = t.arrangement || []; t.fx = t.fx || []; t.adaptive = t.adaptive || { enabled: false, amount: 60 };
@@ -258,6 +261,7 @@ function restoreSnapshot(json) {
   engine.syncMaster(); engine.updateBpmFx(); engine.nextClick = null; if (engine.tempo.mode === 'follow') engine.tempo.follower.reset(p.bpm);
   if (S.selected !== 'master' && !track(S.selected)) S.selected = p.tracks[0] ? p.tracks[0].id : 'master';
   $('#bpm').value = p.bpm; $('#projName').textContent = p.name;
+  engine.setLoop();
   S.sel = null; renderAll(); markDirty();
 }
 function undo() { const l = history.undo(); toast(l ? 'Undo: ' + l : 'Nothing to undo', 1200); haptic(8); }
@@ -516,6 +520,7 @@ function updateTransportUI() {
   $('#btnPlay').classList.toggle('on', engine.playing);
   $('#btnRec').classList.toggle('on', engine.recording);
   $('#btnMetro').classList.toggle('on', engine.metronome);
+  updateLoopUI();
   const ar = engine.autoRec.state; const b = $('#btnAutoRec');
   b.classList.toggle('on', ar !== 'off'); b.classList.toggle('waiting', ar === 'waiting');
   b.textContent = ar === 'waiting' ? 'WAIT' : 'AUTO';
@@ -534,6 +539,7 @@ async function toggleAutoRecord() {
   catch (e) { toast(e.message); }
 }
 engine.on('transport', updateTransportUI);
+engine.on('loop', () => updateLoopUI());
 engine.on('session', () => updateSessionStates());
 engine.on('autorecord', () => { toast('Sound detected — recording'); haptic(20); });
 engine.on('key', (k) => { toast(`Band key → ${k.name}`, 1800); updateKeyButton(); });
@@ -547,10 +553,20 @@ engine.on('recorded', (results) => {
   history.push('Record');
   for (const r of results) {
     const id = addBuffer(r.buffer);
-    r.track.arrangement.push({ id: uid('c'), bufferId: id, start: r.startPos, offset: r.offset, duration: r.duration, name: (r.auto ? 'Auto ' : 'Rec ') + new Date().toLocaleTimeString() });
+    const clip = { id: uid('c'), bufferId: id, start: r.startPos, offset: r.offset, duration: r.duration, name: (r.auto ? 'Auto ' : 'Rec ') + new Date().toLocaleTimeString() };
+    if (r.takes && r.takes.length > 1) {
+      // loop recording: every pass is a take of the same recording; the last complete pass is used
+      clip.takes = r.takes.map((k) => ({ start: k.start, offset: k.offset, duration: k.duration }));
+      const full = clip.takes.map((k, i) => [k, i]).filter(([k]) => Math.abs(k.start - r.loop.start) < 0.01 && k.duration >= (r.loop.end - r.loop.start) - 0.02);
+      clip.take = full.length ? full[full.length - 1][1] : clip.takes.length - 1;
+      Object.assign(clip, clip.takes[clip.take]); clip.name = 'Loop take ' + new Date().toLocaleTimeString();
+      toast(`Loop recording: ${clip.takes.length} takes kept. Using take ${clip.take + 1}; pick another in the clip menu or clip detail.`, 4200);
+    }
+    r.track.arrangement.push(clip);
     if (r.warning) toast(r.warning, 4000);
   }
-  toast(`Recorded ${results.length} take(s) into the arrangement.`); renderArrange(); markDirty();
+  if (!results.some((r) => r.takes && r.takes.length > 1)) toast(`Recorded ${results.length} take(s) into the arrangement.`);
+  renderArrange(); markDirty();
 });
 // MIDI arrangement recording
 engine.on('recstart', ({ startPos }) => {
@@ -558,12 +574,14 @@ engine.on('recstart', ({ startPos }) => {
   const tracks = S.project.tracks.filter((t) => t.kind === 'midi' && t.arm);
   S.midiRec = tracks.length ? { startPos, tracks: new Map(tracks.map((t) => [t.id, { open: new Map(), notes: [] }])) } : null;
 });
-engine.on('recstop', ({ stopPos }) => {
+engine.on('recstop', function ({ stopPos }) {
   S.liveRec = null; $$('.rec-live').forEach((e) => e.remove());
   const R = S.midiRec; S.midiRec = null; if (!R) return;
   const bd = engine.beatDur; let made = 0;
+  const LP = arguments[0].loop; // loop recording: passes are merged (overdub) into one clip over the loop
+  if (LP) { R.startPos = Math.min(R.startPos, LP.start); stopPos = LP.end; }
   for (const [tid, r] of R.tracks) {
-    for (const [n, o] of r.open) r.notes.push({ n, v: o.v, t: o.pos, d: stopPos - o.pos });
+    for (const [n, o] of r.open) r.notes.push({ n, v: o.v, t: o.pos, d: Math.max(0.05, (LP ? LP.end : stopPos) - o.pos) });
     if (!r.notes.length) continue;
     const t = track(tid); if (!t) continue;
     if (!made) history.push('Record MIDI');
@@ -589,7 +607,7 @@ function noteEvent(t, note, vel, on) {
   const R = S.midiRec && S.midiRec.tracks.get(t.id);
   if (R && engine.recording) {
     if (on) R.open.set(note, { v: vel, pos });
-    else { const o = R.open.get(note); if (o) { R.notes.push({ n: note, v: o.v, t: o.pos, d: pos - o.pos }); R.open.delete(note); } }
+    else { const o = R.open.get(note); if (o) { const L = engine.loopSpan; R.notes.push({ n: note, v: o.v, t: o.pos, d: pos >= o.pos ? pos - o.pos : L ? L.end - o.pos : 0.1 }); R.open.delete(note); } }
   }
   const SR = S.slotRec.get(t.id);
   if (SR && now >= SR.startT - 0.02) {
@@ -1034,11 +1052,12 @@ function renderArrange() {
   const heads = h('div', { class: 'arr-heads' }, h('div', { class: 'ruler-spacer' }));
   const scroll = h('div', { class: 'arr-scroll' });
   const content = h('div', { class: 'arr-content', style: { width: W + 'px' } });
-  const ruler = h('div', { class: 'ruler', title: 'Tap to move the playhead' });
+  const ruler = h('div', { class: 'ruler', title: 'Tap to move the playhead. Drag along the ruler to set a loop; drag the loop bar to move it, its edges to resize (Alt = no snap), double-click it to switch the loop on/off.' });
   const bd = engine.barDur; const step = S.zoom * bd < 30 ? 4 : S.zoom * bd < 60 ? 2 : 1;
-  for (let b = 0; b * bd < len; b += step) ruler.append(h('span', { style: { left: b * bd * S.zoom + 'px' } }, String(b + 1)));
-  ruler.addEventListener('pointerdown', (e) => { const r = content.getBoundingClientRect(); engine.setPosition((e.clientX - r.left) / S.zoom); });
-  content.append(ruler);
+  for (let b = 0; b * bd < len; b += step) ruler.append(h('span', { style: { left: (engine.gridOffset + b * bd) * S.zoom + 'px' } }, String(b + 1)));
+  ruler.append(h('div', { class: 'loop-brace', role: 'slider', 'aria-label': 'Loop region' }, h('i', { class: 'lb-l' }), h('i', { class: 'lb-r' })));
+  bindLoopRuler(ruler, content);
+  content.append(ruler, h('div', { class: 'loop-shade' }));
   content.style.setProperty('--bar', bd * S.zoom + 'px');
   content.style.setProperty('--beat', engine.beatDur * S.zoom + 'px');
   for (const { t, depth, hidden } of displayOrder()) {
@@ -1066,7 +1085,7 @@ function renderArrange() {
     h('button', { class: 'add-track small', onclick: () => addTrack(null, 'midi', 'synth'), title: 'Add synth track' }, '+ Synth'),
     h('button', { class: 'add-track small', onclick: () => addTrack(null, 'midi', 'drums'), title: 'Add drum track' }, '+ Drums')));
   content.append(h('div', { class: 'playhead' }));
-  scroll.append(content);
+  scroll.append(content); requestAnimationFrame(updateLoopUI);
   const ov = h('canvas', { class: 'overview', title: 'Overview — tap or drag to scroll' });
   scroll.addEventListener('scroll', () => { heads.scrollTop = scroll.scrollTop; S._arrScroll = scroll.scrollLeft; S._arrTop = scroll.scrollTop; drawOverview(); scheduleClipRedraw(); });
   body.append(heads, scroll);
@@ -1082,7 +1101,7 @@ function renderArrange() {
   scroll.addEventListener('drop', async (e) => {
     e.preventDefault(); e.stopPropagation(); content.classList.remove('dropping');
     const files = [...(e.dataTransfer?.files || [])];
-    const proj = files.filter((f) => /\.(webdaw|zip|json|enc)$/i.test(f.name));
+    const proj = files.filter((f) => /\.(auduio|webdaw|zip|json|enc)$/i.test(f.name));
     if (proj.length) return importProject(proj[0]);
     const audio = files.filter((f) => f.type.startsWith('audio/') || /\.(wav|mp3|ogg|oga|flac|m4a|aac|webm|opus|aif|aiff)$/i.test(f.name));
     if (!audio.length) return toast('Drop audio files (wav, mp3, ogg, flac, m4a…)');
@@ -1130,7 +1149,7 @@ function newMidiClipArr(t, pos) {
 function arrClip(t, c) {
   const isSel = S.sel && S.sel.kind === 'arr' && S.sel.clipId === c.id;
   const el = h('div', { class: 'aclip' + (c.type === 'midi' ? ' midi' : '') + (isSel ? ' sel' : ''), 'data-clip': c.id, style: { left: c.start * S.zoom + 'px', width: Math.max(4, c.duration * S.zoom) + 'px' }, title: (c.name || 'Clip') + ' — drag to move (Shift = no snap), long-press for options' + (c.type === 'midi' ? ', double-tap to edit notes' : '') },
-    h('div', { class: 'aclip-name' }, c.name || ''), h('canvas'));
+    h('div', { class: 'aclip-name' }, c.name || '', c.takes && c.takes.length > 1 ? h('span', { class: 'take-badge', title: 'Loop-recorded clip: take ' + ((c.take || 0) + 1) + ' of ' + c.takes.length }, `T${(c.take || 0) + 1}/${c.takes.length}`) : null), h('canvas'));
   el._clip = c; el._track = t;
   requestAnimationFrame(() => c.type === 'midi' ? drawNotes($('canvas', el), c, t.color) : drawArrClip(el));
   el.addEventListener('dblclick', (e) => { e.stopPropagation(); if (c.type === 'midi') editMidiClip(t, c); });
@@ -1145,6 +1164,8 @@ function arrClip(t, c) {
       { label: 'Quantize…', fn: () => quantizeDialog() },
       c.type === 'midi' ? null : { label: 'Detect tempo (BPM)…', fn: () => clipTempoDialog(t, c, 'arr') },
       { label: 'Rename…', fn: () => { const n = prompt('Clip name', c.name); if (n) change('Rename clip', () => { c.name = n.slice(0, 64); renderArrange(); }); } },
+      { label: 'Loop this clip (Ctrl/Cmd+L)', fn: () => loopToSelection() },
+      ...(c.takes && c.takes.length > 1 ? ['-', ...c.takes.map((k, i) => ({ label: `Take ${i + 1} (${k.duration.toFixed(1)} s)${i === (c.take || 0) ? ' - in use' : ''}`, fn: () => useTake(t, c, i) }))] : []),
       '-', { label: 'Delete', fn: () => clipOp('del') },
     ]);
   });
@@ -1164,6 +1185,84 @@ function arrClip(t, c) {
 // any time position (snapped to the beat grid unless Snap is off or Alt/Shift is held) or any session slot, and
 // empty space creates a new track. The clip that lands wins: clips underneath on the same track are trimmed /
 // split / removed (Ableton-style). Every placement is one undo step.
+// ------------------------------------------------------------------ v0.3.1 arrangement loop
+// project.loop = { on, start, end } in seconds. Saved with the project; every edit is one undo step.
+function loopSnap(pos, ev, mode = 'round') {
+  pos = Math.max(0, pos); if (ev && ev.altKey) return pos; if (prefs.snap === false && !(ev && ev.forceSnap)) return pos;
+  const q = engine.beatDur * S.zoom >= 10 ? engine.beatDur : engine.barDur, o = engine.gridOffset;
+  const f = mode === 'floor' ? Math.floor : mode === 'ceil' ? Math.ceil : Math.round;
+  return Math.max(0, f((pos - o) / q + (mode === 'round' ? 0 : 1e-6 * (mode === 'floor' ? 1 : -1))) * q + o);
+}
+function loopMinLen(ev) { return ev && ev.altKey || prefs.snap === false ? 0.05 : (engine.beatDur * S.zoom >= 10 ? engine.beatDur : engine.barDur); }
+function applyLoop(label, fn) { change(label, fn); engine.setLoop(); updateLoopUI(); }
+function toggleLoop(force) {
+  const L = S.project.loop; const on = force != null ? !!force : !L.on;
+  applyLoop(on ? 'Loop on' : 'Loop off', () => { L.on = on; });
+  toast(on ? `Loop on: ${loopLabel()}` : 'Loop off', 1400);
+}
+function barOf(pos) { return Math.round((pos - engine.gridOffset) / engine.barDur * 100) / 100 + 1; }
+function loopLabel() { const L = S.project.loop; const a = barOf(L.start), b = barOf(L.end); const nice = (x) => Number.isInteger(x) ? String(x) : x.toFixed(2); return Number.isInteger(a) && Number.isInteger(b) ? `bars ${a}–${b - 1}` : `${nice(a)} – ${nice(b)}`; }
+function loopInfo() { const L = S.project.loop, bars = (L.end - L.start) / engine.barDur; return { on: !!L.on, start: L.start, end: L.end, startBar: Math.floor(barOf(L.start) + 1e-6), bars: Math.round(bars * 100) / 100, label: loopLabel() }; }
+function setLoopBars(startBar, bars, on = true) {
+  startBar = Math.max(1, Math.round(startBar)); bars = Math.max(1, bars);
+  const start = engine.gridOffset + (startBar - 1) * engine.barDur, end = start + bars * engine.barDur;
+  applyLoop('Loop bars', () => { Object.assign(S.project.loop, { start, end, on }); });
+}
+// Ctrl/Cmd+L: loop the selected arrangement clip, or the 4 bars at the playhead when nothing is selected
+function loopToSelection() {
+  const sc = S.sel && S.sel.kind === 'arr' ? selectedClip() : null;
+  let start, end;
+  if (sc && sc.c) { start = sc.c.start; end = sc.c.start + sc.c.duration; }
+  else { start = engine.barFloor(engine.position()); end = start + 4 * engine.barDur; }
+  if (end - start < 0.05) return;
+  applyLoop('Loop selection', () => { Object.assign(S.project.loop, { start, end, on: true }); });
+  toast(`Loop on: ${loopLabel()}`, 1400);
+}
+function updateLoopUI() {
+  if (!S.project) return; const L = S.project.loop;
+  const b = $('#btnLoop'); if (b) { b.classList.toggle('on', !!L.on); b.setAttribute('aria-pressed', String(!!L.on)); }
+  const br = $('#arrangeView .loop-brace'), sh = $('#arrangeView .loop-shade');
+  if (br) { br.style.left = L.start * S.zoom + 'px'; br.style.width = Math.max(2, (L.end - L.start) * S.zoom) + 'px'; br.classList.toggle('off', !L.on); br.setAttribute('aria-valuetext', loopLabel() + (L.on ? ' (on)' : ' (off)')); }
+  if (sh) { sh.style.left = L.start * S.zoom + 'px'; sh.style.width = Math.max(0, (L.end - L.start) * S.zoom) + 'px'; sh.hidden = !L.on; }
+}
+function bindLoopRuler(ruler, content) {
+  let D = null;
+  const secAt = (e) => (e.clientX - content.getBoundingClientRect().left) / S.zoom;
+  ruler.addEventListener('pointerdown', (e) => {
+    if (e.button > 0) return;
+    const L = S.project.loop, br = e.target.closest('.loop-brace');
+    const edge = Math.max(6, e.pointerType === 'touch' ? 14 : 7) / S.zoom, x = secAt(e);
+    let mode = 'new';
+    if (br) mode = e.target.classList.contains('lb-l') || x - L.start < edge ? 'l' : e.target.classList.contains('lb-r') || L.end - x < edge ? 'r' : 'move';
+    D = { mode, x0: x, cx: e.clientX, s0: L.start, e0: L.end, pushed: false, id: e.pointerId, moved: false };
+    try { ruler.setPointerCapture(e.pointerId); } catch (err) {}
+    e.preventDefault();
+  });
+  ruler.addEventListener('pointermove', (e) => {
+    if (!D || e.pointerId !== D.id) return;
+    if (!D.moved && Math.abs(e.clientX - D.cx) < 4) return;
+    D.moved = true;
+    const L = S.project.loop, x = secAt(e), minL = loopMinLen(e);
+    if (!D.pushed) { history.push('Loop region'); D.pushed = true; ruler.classList.add('dragging'); }
+    if (D.mode === 'move') { const len = D.e0 - D.s0; let s0 = loopSnap(D.s0 + (x - D.x0), e); s0 = Math.max(0, s0); L.start = s0; L.end = s0 + len; }
+    else if (D.mode === 'l') L.start = Math.max(0, Math.min(loopSnap(x, e), L.end - minL));
+    else if (D.mode === 'r') L.end = Math.max(loopSnap(x, e), L.start + minL);
+    else { const a = Math.min(D.x0, x), b = Math.max(D.x0, x); L.start = loopSnap(a, e, e.altKey ? 'round' : 'floor'); L.end = Math.max(loopSnap(b, e, e.altKey ? 'round' : 'ceil'), L.start + minL); L.on = true; }
+    updateLoopUI();
+  });
+  const end = (e) => {
+    if (!D || e.pointerId !== D.id) return; const d = D; D = null; ruler.classList.remove('dragging');
+    if (!d.moved) { if (d.mode === 'new' || e.type === 'pointercancel') { if (e.type !== 'pointercancel') engine.setPosition(Math.max(0, d.x0)); } return; }
+    engine.setLoop(); markDirty(); updateLoopUI(); if (phone.active) phone.render();
+  };
+  ruler.addEventListener('pointerup', end); ruler.addEventListener('pointercancel', end);
+  ruler.addEventListener('dblclick', (e) => { const L = S.project.loop, x = secAt(e); const br = ruler.querySelector('.loop-brace').getBoundingClientRect(); if (x >= L.start && x <= L.end && e.clientY >= br.top - 3) toggleLoop(); });
+}
+function useTake(t, c, i) {
+  if (!c.takes || !c.takes[i]) return;
+  change('Pick take', () => { Object.assign(c, c.takes[i]); c.take = i; engine.rescheduleTrack(t); });
+  S.clipView = null; renderArrange(); renderDevices(); toast(`Using take ${i + 1} of ${c.takes.length}`, 1200);
+}
 function setView(v) { S.view = v; renderAll(); }
 const snapOn = (ev) => prefs.snap !== false && !(ev && (ev.altKey || ev.shiftKey));
 function snapPos(pos, ev) { pos = Math.max(0, pos); if (!snapOn(ev)) return pos; const q = engine.beatDur; return Math.max(0, Math.round((pos - engine.gridOffset) / q) * q + engine.gridOffset); }
@@ -1351,7 +1450,7 @@ function bindSessionDrop(root) {
     $$('.drop-target').forEach((x) => x.classList.remove('drop-target'));
     const files = [...(e.dataTransfer?.files || [])]; if (!files.length) return;
     e.preventDefault(); e.stopPropagation();
-    const proj = files.find((f) => /\.(webdaw|zip|json|enc)$/i.test(f.name)); if (proj) return importProject(proj);
+    const proj = files.find((f) => /\.(auduio|webdaw|zip|json|enc)$/i.test(f.name)); if (proj) return importProject(proj);
     const audio = files.filter(isAudioFile); if (!audio.length) return toast('Drop audio files (wav, mp3, ogg, flac, m4a…)');
     await engine.resume();
     const t = dropTargetAt(e.clientX, e.clientY);
@@ -1427,7 +1526,9 @@ function renderClipDetail(head, panel, sc) {
   const trBtn = h('button', { class: 'small' + (V.tr ? ' on' : ''), title: 'Show transient markers (the hits Quantize moves onto the grid)', onclick: () => { V.tr = !V.tr; prefs.showTransients = V.tr; savePrefs(); trBtn.classList.toggle('on', V.tr); draw(); } }, 'Transients');
   const prevBtn = h('button', { class: 'small preview-btn' + (engine.audition && engine.audition.c === c ? ' on' : ''), title: 'Preview this clip through the track (click again to stop). Tip: tap anywhere on the waveform to hear it from there.', 'aria-label': 'Preview clip',
     onclick: () => { if (engine.audition && engine.audition.c === c) engine.stopAudition(); else { engine.resume(); startAudition(t, c, { key: 'detail' }); } } }, icon('play'), ' Preview');
-  head.append(prevBtn, trBtn,
+  const takesUI = isArr && c.takes && c.takes.length > 1 ? h('span', { class: 'takes', role: 'group', 'aria-label': 'Loop takes' }, h('span', { class: 'dim' }, 'Take'),
+    c.takes.map((k, i) => h('button', { class: 'small take' + (i === (c.take || 0) ? ' on' : ''), 'aria-pressed': String(i === (c.take || 0)), title: `Use take ${i + 1} (${k.duration.toFixed(1)} s)`, onclick: () => useTake(t, c, i) }, String(i + 1)))) : null;
+  head.append(prevBtn, takesUI, trBtn,
     h('button', { class: 'small', title: 'Quantize: move the hits onto the beat grid', onclick: () => quantizeDialog() }, 'Quantize…'),
     h('button', { class: 'small', title: 'Detect this clip\'s tempo (BPM)', onclick: () => clipTempoDialog(t, c, isArr ? 'arr' : 'slot') }, 'BPM…', lockBadge('tempo.detect')),
     h('button', { class: 'small', title: 'Zoom out', onclick: () => zoom(1.6) }, '−'), h('button', { class: 'small', title: 'Zoom in (or pinch / Ctrl+wheel)', onclick: () => zoom(1 / 1.6) }, '+'),
@@ -1733,7 +1834,7 @@ function instrumentCard(t) {
 }
 
 // ------------------------------------------------------------------ racks (parallel chains + macros), presets
-const RACK_KEY = 'webdaw.rackPresets';
+const RACK_KEY = 'auduio.rackPresets';
 const BUILTIN_RACKS = {
   'Empty': { chains: [{ name: 'Chain 1', fx: [] }], macroMap: [] },
   'Parallel Crush': { chains: [{ name: 'Dry', fx: [] }, { name: 'Crush', volume: -10, fx: [{ type: 'compressor', values: { threshold: -38, ratio: 12, attack: 1, release: 90, makeup: 12 } }] }],
@@ -2013,7 +2114,7 @@ async function shareOrDownload(blob, name, type) {
   toast(`Exported ${name} (${(blob.size / 1048576).toFixed(1)} MB)`);
 }
 const baseName = () => (S.project.name || 'project').replace(/[^\w\- ]+/g, '_');
-async function exportProject() { await saveNow(); await shareOrDownload(exportProjectZip(S.project, engine.buffers), baseName() + '.webdaw.zip', 'application/zip'); }
+async function exportProject() { await saveNow(); await shareOrDownload(exportProjectZip(S.project, engine.buffers), baseName() + '.auduio.zip', 'application/zip'); }
 async function exportEncrypted() {
   if (!cryptoAvailable()) return toast('Encryption needs a secure (https) context.');
   const pw = await askPassword('Export encrypted', true); if (pw == null) return;
@@ -2021,7 +2122,7 @@ async function exportEncrypted() {
   await saveNow(); toast('Encrypting…', 1200);
   const bytes = new Uint8Array(await exportProjectZip(S.project, engine.buffers).arrayBuffer());
   const enc = await encryptBytes(bytes, pw);
-  await shareOrDownload(new Blob([enc], { type: 'application/octet-stream' }), baseName() + '.webdaw.enc', 'application/octet-stream');
+  await shareOrDownload(new Blob([enc], { type: 'application/octet-stream' }), baseName() + '.auduio.enc', 'application/octet-stream');
 }
 async function importProject(file) {
   try {
@@ -2123,7 +2224,7 @@ function menuActions() {
     ['Tutorial', () => startTutorial()],
     ['-'],
     ['Install app', installApp],
-    ['About', () => openDialog('About WebDAW', h('div', {}, h('p', {}, 'WebDAW v0.3.1 — a browser DAW built on the Web Audio API. Works offline once loaded; makes no network requests besides loading itself. Projects are saved in this browser (IndexedDB); use Export/Import to move them.'),
+    ['About', () => openDialog('About Auduio', h('div', {}, h('p', {}, 'Auduio v0.3.1 (formerly WebDAW) — a browser DAW built on the Web Audio API. Works offline once loaded; makes no network requests besides loading itself. Projects are saved in this browser (IndexedDB); use Export/Import to move them.'),
       h('p', { class: 'hint' }, 'Shortcuts: Space play/stop · R record · M metronome · Tab switch view · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z or Ctrl+Y redo · Ctrl/Cmd+C/V/D copy/paste/duplicate · Delete remove clip · S split.')))],
   ];
   const m = $('#menu'); m.innerHTML = '';
@@ -2189,7 +2290,8 @@ function drawLiveRecording() {
   for (const k of takes) {
     const t = track(k.tid); if (!t) continue; const lp = livePeaksFor(k.tid + ':' + k.kind, k.rec);
     let host = null, left = 0, width = 0;
-    if (k.kind === 'arr' && S.view === 'arrange') { host = $(`#arrangeView .lane[data-id="${k.tid}"]`); left = k.startPos * S.zoom; width = Math.max(2, (pos - k.startPos) * S.zoom); }
+    let passStart = k.startPos; if (k.kind === 'arr' && engine.loopSpan && pos < k.startPos - 0.01) passStart = engine.loopSpan.start;
+    if (k.kind === 'arr' && S.view === 'arrange') { host = $(`#arrangeView .lane[data-id="${k.tid}"]`); left = passStart * S.zoom; width = Math.max(2, (pos - passStart) * S.zoom); }
     else if (k.kind === 'slot' && S.view === 'session') host = $(`#sessionView .col[data-id="${k.tid}"] .slot[data-slot="${k.slot}"]`);
     if (!host) continue;
     let el = host.querySelector('.rec-live');
@@ -2197,7 +2299,7 @@ function drawLiveRecording() {
     if (k.kind === 'arr') { el.style.left = left + 'px'; el.style.width = width + 'px'; }
     // show the last few seconds scrolling in (session) or the whole take (arrangement)
     const dur = lp.duration, cv = el.querySelector('canvas');
-    if (dur > 0.02) drawWaveform(cv, lp, k.kind === 'arr' ? { startSec: 0, endSec: Math.max(dur, (pos - k.startPos) || dur), color: '#EF4444', stereo: false } : { startSec: Math.max(0, dur - 4), endSec: Math.max(4, dur), color: '#EF4444', stereo: false });
+    if (dur > 0.02) drawWaveform(cv, lp, k.kind === 'arr' ? (passStart !== k.startPos ? { startSec: Math.max(0, dur - (pos - passStart)), endSec: dur, color: '#EF4444', stereo: false } : { startSec: 0, endSec: Math.max(dur, (pos - k.startPos) || dur), color: '#EF4444', stereo: false }) : { startSec: Math.max(0, dur - 4), endSec: Math.max(4, dur), color: '#EF4444', stereo: false });
   }
 }
 let scopeBuf = null;
@@ -2252,6 +2354,7 @@ function bindUI() {
   $('#btnRec').addEventListener('click', () => { haptic(14); toggleRecord(); });
   $('#btnAutoRec').addEventListener('click', () => { haptic(10); toggleAutoRecord(); });
   $('#btnMetro').addEventListener('click', () => { engine.metronome = !engine.metronome; engine.nextClick = null; updateTransportUI(); });
+  $('#btnLoop').addEventListener('click', () => { haptic(8); toggleLoop(); });
   $('#btnTap').addEventListener('pointerdown', (e) => { e.preventDefault(); tapTempo(); });
   $('#btnTap').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tapTempo(); } });
   $('#btnTempo').addEventListener('click', (e) => { e.stopPropagation(); if (tempoPop) closeTempoPop(); else tempoPopover(e.currentTarget); });
@@ -2276,6 +2379,7 @@ function bindUI() {
       else if (k === 'c') { e.preventDefault(); clipOp('copy'); }
       else if (k === 'v') { e.preventDefault(); clipOp('paste'); }
       else if (k === 'd') { e.preventDefault(); clipOp('dup'); }
+      else if (k === 'l') { e.preventDefault(); loopToSelection(); }
       return;
     }
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
@@ -2292,7 +2396,7 @@ function bindUI() {
   document.addEventListener('drop', (e) => {
     e.preventDefault(); if (!engine.ctx || !S.project) return;
     const files = [...e.dataTransfer.files];
-    const proj = files.find((f) => /\.(zip|webdaw|json|enc)$/i.test(f.name));
+    const proj = files.find((f) => /\.(zip|auduio|webdaw|json|enc)$/i.test(f.name));
     if (proj) importProject(proj); else if (files.length) importAudioFiles(files);
   });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); S.deferredInstall = e; });
@@ -2342,6 +2446,7 @@ const phone = createPhone({
   S, engine, history, track, change, markDirty, renderAll, renderDevices, togglePlay, toggleRecord, toggleAutoRecord, toggleArm, addTrack, renameTrack,
   autoMixDialog, gate, lockBadge, EFFECT_TYPES, EASY_PARAMS, EFFECT_HELP, setParam, fmtParam, fmtPos, undo, redo, tapTempo, tempoPopover, prefsDialog,
   projectsDialog, saveAndShare, startTutorial, toggleHelp, updateTransportUI, liveTakes, livePeaksFor, placeClip, snapPos, startAudition, syncMonitor, icon,
+  toggleLoop, loopInfo, setLoopBars,
 });
 function applyPhoneMode() { const on = wantsPhone(); if (on !== phone.active) { phone.setActive(on); if (!on) renderAll(); } }
 addEventListener('resize', () => { if (S.project && (prefs.phoneMode || 'auto') === 'auto') applyPhoneMode(); });

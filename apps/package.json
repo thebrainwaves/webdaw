@@ -1,17 +1,25 @@
 {
-  "name": "webdaw-apps",
+  "name": "auduio-apps",
   "version": "0.3.1",
   "private": true,
-  "description": "Native desktop (Tauri) and mobile (Capacitor) shells for WebDAW",
+  "description": "Native desktop (Tauri) and mobile (Capacitor) shells for Auduio",
   "scripts": {
     "sync-web": "node scripts/sync-web.mjs",
     "tauri": "tauri",
     "desktop:dev": "npm run sync-web && tauri dev",
     "desktop:build": "npm run sync-web && tauri build",
     "android:sync": "npm run sync-web && cap sync android",
-    "android:build": "npm run android:sync && cd android && ./gradlew assembleDebug"
+    "android:build": "npm run android:sync && cd android && ./gradlew assembleDebug",
+    "ios:sync": "npm run sync-web && cap sync ios",
+    "ios:open": "cap open ios"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
     "@tauri-apps/cli": "^2.12.0"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/ios": "^8.5.2"
   }
 }

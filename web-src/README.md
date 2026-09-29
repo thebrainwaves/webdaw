@@ -1,4 +1,6 @@
-# WebDAW (v0.3.1)
+# Auduio (v0.3.1)
+
+Auduio was called WebDAW until v0.3.1. Saved projects and settings carry over automatically, and old `.webdaw.zip` files still import; new exports are `.auduio.zip`.
 
 A browser DAW packaged as an installable PWA. It uses vanilla ES modules with no framework and no bundler. The build step copies `src/` to `dist/` and adds the service-worker precache list.
 
@@ -14,6 +16,8 @@ node tests/tempo-unit.mjs      # v0.3 tempo detection unit tests (synthetic clic
 node tests/e2e-tempo.mjs       # v0.3 auto-timing in a real browser (tap, detect, follow, clip BPM)
 node tests/e2e-v3.mjs          # v0.3 phone mode, tutorial, theme, waveforms/clip detail, free clip placement
 node tests/e2e-v031.mjs        # v0.3.1 no-emoji UI scan, click-to-audition, clip preview, auto-monitor
+node tests/e2e-loop.mjs        # v0.3.1 loop brace, looped playback, loop-recording takes, phone loop controls
+node tests/e2e-rename.mjs      # v0.3.1 rename to Auduio: visible name, .auduio.zip export, old file import, storage migration
 ```
 The mic needs HTTPS or localhost. GitHub Pages serves over HTTPS.
 
@@ -43,9 +47,18 @@ Publish the contents of `dist/`. Every path is relative, so the app works from a
 - `src/js/midi.js`, `ui/pianoroll.js`, `history.js`, `security.js`, `validate.js`: Web MIDI, piano roll, undo/redo, PIN/encryption, import validation
 
 ## What's new in v0.3.1
+- Renamed to Auduio. The visible name, manifest, export extension (`.auduio.zip`, `.auduio.enc`) and the desktop and mobile app ids all changed. Projects saved in the old `webdaw` IndexedDB database are copied into the new `auduio` one the first time you open it, and the old database is left untouched. Settings saved under the old `webdaw.*` keys are copied too. The project file format id stays `webdaw-project`, so older versions can still open new files; `auduio-project` is also accepted.
 - A recording machine, not a toy: all emoji are gone. The UI uses monochrome SVG line icons (`src/js/ui/icons.js`) or plain text, with flatter surfaces, tighter type and tabular numbers. The purple/red accents and phone-mode touch sizes are unchanged.
 - Click to hear: pressing an audio clip in the Arrangement or an audio slot in Session auditions it right away through the track's effects, with no launch quantize. Hold it to preview until you let go, or tap it once to latch and tap again to stop. Session slots have a separate play button for a quantized launch. In clip detail, use the Preview button or tap the waveform to play from that point. Esc stops a preview.
 - Auto-monitor (Preferences): hear the selected armed track's input. Use headphones.
+- Loop bar, Ableton-style: the loop brace sits on the Arrangement ruler.
+  - Drag along the ruler to set a loop. Drag the bar to move it, or drag its edges to resize. It snaps to beats (bars when zoomed out); hold Alt to place it freely.
+  - Double-click the brace, or use the Loop button in the transport, to switch the loop on or off. Ctrl/Cmd+L loops the selected clip, or the 4 bars at the playhead.
+  - Playback wraps seamlessly: every pass is scheduled sample-accurately ahead of time and the metronome keeps an even beat.
+  - Recording while the loop is on keeps every pass as a take of one recording. The clip uses the last complete pass; pick another take with the Take buttons in clip detail or the clip menu. MIDI loop recording merges the passes into one clip (overdub).
+  - Phone mode has a Loop toggle plus "loop these bars" controls (start bar, 1/2/4/8 bars).
+  - The loop is saved with the project and every change can be undone.
+- Fix: per-track meters stayed at zero in the analyser fallback (when AudioWorklet is unavailable), for example during audition.
 - In the desktop and mobile app shells the service worker is skipped, because those apps bundle their files.
 
 ## What's new in v0.3
@@ -85,4 +98,4 @@ Publish the contents of `dist/`. Every path is relative, so the app works from a
 
 
 ## Project file format
-The export is a `.webdaw.zip` file (stored, uncompressed). It contains `project.json` and `audio/<bufferId>.wav` (16-bit PCM). Import also accepts a zip that uses deflate compression, provided the browser supports DecompressionStream.
+The export is an `.auduio.zip` file (older versions wrote `.webdaw.zip`; both import) (stored, uncompressed). It contains `project.json` and `audio/<bufferId>.wav` (16-bit PCM). Import also accepts a zip that uses deflate compression, provided the browser supports DecompressionStream.

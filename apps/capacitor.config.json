@@ -1,0 +1,17 @@
+{
+  "appId": "com.thebrainwaves.auduio",
+  "appName": "Auduio",
+  "webDir": "web",
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "ios": {
+    "contentInset": "never",
+    "limitsNavigationsToAppBoundDomains": false
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

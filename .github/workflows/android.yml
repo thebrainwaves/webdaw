@@ -1,0 +1,51 @@
+# Builds the Auduio Android app (Capacitor) as a debug-signed APK that can be sideloaded.
+# On a pushed tag like v0.3.1 it attaches the APK to the (draft) GitHub Release created by desktop.yml.
+name: Android app
+
+on:
+  # Tag trigger disabled for now: the sideload APK is built locally with a fixed debug key.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - name: Install
+        run: npm ci || npm install
+      - name: Build web app and sync into the Android project
+        run: |
+          node scripts/sync-web.mjs ../web-src
+          npx cap sync android
+      - name: Build debug APK
+        working-directory: apps/android
+        run: ./gradlew assembleDebug
+      # --- Release signing (optional, for Play Store / signed updates) ---
+      # Store a keystore as base64 in secrets.ANDROID_KEYSTORE and use assembleRelease with:
+      #   ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+      - name: Rename
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk "Auduio-${GITHUB_REF_NAME#v}-debug.apk" || cp android/app/build/outputs/apk/debug/app-debug.apk Auduio-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auduio-android
+          path: apps/Auduio-*.apk
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: apps/Auduio-*.apk

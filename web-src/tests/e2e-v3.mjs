@@ -266,7 +266,7 @@ try {
   await T.click('.tut-next'); await sleep(300); await T.click('.tut-next'); await sleep(300);
   const t4 = await T.evaluate(() => ({ step: __daw.tutorial.step, text: document.querySelector('.tut-text').textContent }));
   await T.click('.tut-skip'); await sleep(200);
-  const tDone = await T.evaluate(() => ({ running: __daw.tutorial.running, done: JSON.parse(localStorage.getItem('webdaw.prefs')).tutorialDone }));
+  const tDone = await T.evaluate(() => ({ running: __daw.tutorial.running, done: JSON.parse(localStorage.getItem('auduio.prefs')).tutorialDone }));
   await T.click('#btnHelp'); await sleep(200); await shot(T, 'desktop-help-replay');
   await T.click('.help-bar button.primary'); await sleep(300);
   const tReplay = await T.evaluate(() => ({ running: __daw.tutorial.running, n: __daw.tutorial.count, helpOff: !document.body.classList.contains('helpmode') }));
@@ -350,7 +350,7 @@ try {
     ok(`[${W}x${H}] Phone: long-press a clip to pick it up, change track, tap “Place here”; undo restores`, carrying && placed.moved && placed.srcLeft === 0 && undone >= 1, JSON.stringify({ carrying, placed, undone }));
     // full layout toggle
     await P.tap('.ph-tab[data-tab=more]'); await sleep(200); await P.tap('.ph-full'); await sleep(400);
-    const full = await P.evaluate(() => ({ phone: document.body.classList.contains('phone'), top: !!document.querySelector('#topbar').getClientRects().length, pref: JSON.parse(localStorage.getItem('webdaw.prefs')).phoneMode }));
+    const full = await P.evaluate(() => ({ phone: document.body.classList.contains('phone'), top: !!document.querySelector('#topbar').getClientRects().length, pref: JSON.parse(localStorage.getItem('auduio.prefs')).phoneMode }));
     await shot(P, `${tag}-full-layout`);
     ok(`[${W}x${H}] “Show full layout” switches to the full UI and remembers it`, !full.phone && full.top && full.pref === 'off', JSON.stringify(full));
     ok(`[${W}x${H}] No CSP violations`, (await P.evaluate(() => window.__csp.length)) === 0);

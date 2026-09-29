@@ -25,6 +25,7 @@ const P = {
   desktop: '<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>',
   move: '<path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  loop: '<path d="m17 2 3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="m7 22-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/>',
   chevDown: '<path d="m6 9 6 6 6-6"/>', chevUp: '<path d="m6 15 6-6 6 6"/>', chevRight: '<path d="m9 6 6 6-6 6"/>', chevLeft: '<path d="m15 6-6 6 6 6"/>',
   power: '<path d="M12 3v8"/><path d="M6.8 6.6a7.5 7.5 0 1 0 10.4 0"/>',
   height: '<path d="M12 4v16M8 8l4-4 4 4M8 16l4 4 4-4"/>',
