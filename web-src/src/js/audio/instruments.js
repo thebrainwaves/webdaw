@@ -1,5 +1,5 @@
-// Built-in MIDI instruments: a polyphonic subtractive synth and a drum sampler whose kits are
-// synthesized in code at load time (no samples, nothing copyrighted).
+// Built-in MIDI instruments: a polyphonic subtractive synth and a 128-pad drum sampler. Pads without a user
+// sample play kits synthesized in code at load time (nothing copyrighted); user samples live in the project.
 
 import { AnalogSynth, WavetableSynth } from './synths.js';
 export { AnalogSynth, WavetableSynth, wavetableFrame, WAVETABLES } from './synths.js';
@@ -135,29 +135,61 @@ export class DrumSampler extends Instrument {
   static get label() { return 'Drum Kit'; }
   static get params() {
     return [
-      { key: 'kit', label: 'Kit', type: 'select', options: Object.keys(KITS), def: 'acoustic', easy: true, help: 'Synthesized drum kit (generated in code, no samples).' },
+      { key: 'kit', label: 'Kit', type: 'select', options: Object.keys(KITS), def: 'acoustic', easy: true, help: 'Built-in drum sounds (generated in code) for pads without your own sample.' },
       { key: 'tune', label: 'Tune', min: -12, max: 12, def: 0, unit: 'st', easy: true, help: 'Pitch of all drums in semitones.' },
       { key: 'gain', label: 'Gain', min: -30, max: 6, def: -4, unit: 'dB', easy: true },
     ];
   }
-  constructor(ctx) { super(ctx, 'drums'); this.sources = new Set(); this.openHat = null; }
+  constructor(ctx) { super(ctx, 'drums'); this.sources = new Set(); this.openHat = null; this.pads = {}; this.bufs = null; this.held = new Map(); this.chokes = new Map(); }
   apply(k, v) {
     if (k === 'gain') this.output.gain.setTargetAtTime(dbToLin(v), this.ctx.currentTime, 0.02);
     if (k === 'kit') this.kit = getKit(this.ctx, v);
   }
-  playNote(note, vel, t) {
+  // user samples (t.inst.pads, keyed by MIDI note). bufs = { get(id), want(id) -> Promise } from the engine (lazy loading)
+  setPads(pads, bufs) { this.pads = pads || {}; if (bufs) this.bufs = bufs; }
+  padBuffer(note) { const p = this.pads[note]; return p && this.bufs ? this.bufs.get(p.bufferId) : null; }
+  playNote(note, vel, t, dur) {
+    const pad = this.pads[note];
+    if (pad && this.bufs) {
+      const buf = this.bufs.get(pad.bufferId);
+      if (buf) return this.playSample(note, pad, buf, vel, t, dur);
+      // not loaded yet (lazy): fetch it and still play the hit if it arrives in time
+      this.bufs.want(pad.bufferId).then((b) => { if (b && this.ctx.currentTime < t + 0.03) this.playSample(note, pad, b, vel, Math.max(t, this.ctx.currentTime), dur); }).catch(() => {});
+      return null;
+    }
     const name = DRUM_NOTES[note] || FALLBACK[note % 12];
-    const buf = this.kit[name]; if (!buf) return;
+    const buf = this.kit[name]; if (!buf) return null;
     const src = this.ctx.createBufferSource(); src.buffer = buf; src.playbackRate.value = Math.pow(2, (this.values.tune || 0) / 12);
     const g = this.ctx.createGain(); g.gain.value = Math.pow(vel / 127, 1.3);
     src.connect(g).connect(this.output); src.start(t);
     if (name === 'hatC' && this.openHat) { try { this.openHat.stop(t); } catch (e) {} this.openHat = null; } // hat choke
     if (name === 'hatO') this.openHat = src;
     this.sources.add(src); src.onended = () => this.sources.delete(src);
+    return null;
   }
-  noteOn(note, vel, t = this.ctx.currentTime) { this.playNote(note, vel, t); }
-  noteOff() {}
-  allOff() { const t = this.ctx.currentTime; this.sources.forEach((s) => { try { s.stop(t + 0.02); } catch (e) {} }); this.sources.clear(); }
+  playSample(note, pad, buf, vel, t, dur) {
+    const ctx = this.ctx, a = Math.max(0, Math.min(1, pad.start || 0)) * buf.duration, b = Math.max(0, Math.min(1, pad.end == null ? 1 : pad.end)) * buf.duration;
+    const rate = Math.pow(2, ((this.values.tune || 0) + (pad.pitch || 0)) / 12), len = Math.max(0.002, b - a);
+    // choke group: a new hit silences the other pads in the same group (e.g. open/closed hat)
+    if (pad.choke) { const L = this.chokes.get(pad.choke); if (L) L.forEach((v) => this.fade(v, t)); this.chokes.set(pad.choke, new Set()); }
+    const src = ctx.createBufferSource(); src.buffer = buf; src.playbackRate.value = rate;
+    const g = ctx.createGain(); g.gain.value = Math.pow(vel / 127, 1.3) * dbToLin(pad.gain || 0);
+    src.connect(g).connect(this.output);
+    src.start(t, a, len); // the pad plays only its start..end part
+    const v = { src, g, note, choke: pad.choke };
+    if (pad.mode === 'gate' && dur != null) this.fade(v, t + Math.max(0.005, dur));
+    if (pad.choke) this.chokes.get(pad.choke).add(v);
+    this.sources.add(src); src.onended = () => { this.sources.delete(src); if (pad.choke) { const L = this.chokes.get(pad.choke); if (L) L.delete(v); } try { g.disconnect(); } catch (e) {} };
+    return v;
+  }
+  fade(v, t) { try { v.g.gain.setTargetAtTime(0, t, 0.008); v.src.stop(t + 0.06); } catch (e) {} }
+  noteOn(note, vel, t = this.ctx.currentTime) {
+    const pad = this.pads[note], v = this.playNote(note, vel, t);
+    if (pad && pad.mode === 'gate' && v) this.held.set(note, v);
+  }
+  // gate pads stop when the key/pad is released
+  noteOff(note, t = this.ctx.currentTime) { const v = this.held.get(note); if (v) { this.fade(v, t); this.held.delete(note); } }
+  allOff() { const t = this.ctx.currentTime; this.sources.forEach((s) => { try { s.stop(t + 0.02); } catch (e) {} }); this.sources.clear(); this.held.clear(); this.chokes.clear(); }
 }
 
 export const INSTRUMENT_TYPES = { synth: AnalogSynth, wavetable: WavetableSynth, drums: DrumSampler };

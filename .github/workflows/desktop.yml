@@ -1,7 +1,10 @@
 # Builds the Auduio desktop app for macOS (universal .dmg), Windows (.msi + NSIS .exe)
-# and Linux (.deb + .AppImage), including the native audio engine sidecar (apps/engine, JUCE C++)
-# that hosts VST3 (and AU on macOS) plugins. The engine is built with CMake first and bundled
-# through tauri.conf.json -> bundle.externalBin (binaries/auduio-engine-<target-triple>). On a pushed tag like v0.3.1 it drafts a GitHub Release
+# and Linux (.deb + .AppImage), including the native audio engine sidecar that hosts plugins. Two engine
+# implementations speak the same stdin/stdout protocol; matrix.engine picks one per platform:
+#   rs   = apps/engine-rs (Rust, JUCE-free, no licence fees): VST3 + CLAP. Licence-gated with cargo-deny.
+#   juce = apps/engine (JUCE C++): VST3 (+ AU on macOS). Needs a JUCE licence for commercial distribution.
+# The engine is built first and bundled through tauri.conf.json -> bundle.externalBin
+# (binaries/auduio-engine-<target-triple>). On a pushed tag like v0.3.1 it drafts a GitHub Release
 # with all installers attached; on manual runs it just uploads workflow artifacts.
 #
 # Expected repo layout (see README): web app source in ./web-src (built with
@@ -22,16 +25,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # engine: rs on Linux and Windows. Linux is verified (engine-test VST3 + CLAP, e2e-plugins with Surge XT);
+          # Windows builds and runs the same code (Win32 editor windows, WASAPI, WinMM MIDI out) and is self-tested
+          # below on every run. macOS stays on juce until engine-rs is verified on a real Mac (engine-rs has NSView
+          # editor windows but no Audio Units yet). The Rust engine is still built + self-tested on every row.
           - platform: windows-latest
             args: ''
+            engine: rs
             engine_cmake: '-A x64'
             engine_triples: x86_64-pc-windows-msvc
           - platform: macos-latest
             args: --target universal-apple-darwin
+            engine: juce
             engine_cmake: '-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0'
             engine_triples: universal-apple-darwin aarch64-apple-darwin x86_64-apple-darwin
           - platform: ubuntu-22.04
             args: --bundles deb,appimage
+            engine: rs
             engine_cmake: '-G Ninja'
             engine_triples: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.platform }}
@@ -51,7 +61,9 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: apps/src-tauri -> target
+          workspaces: |
+            apps/src-tauri -> target
+            apps/engine-rs -> target
 
       - name: Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -59,23 +71,57 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev
-          # native audio engine (JUCE): ALSA, fonts, X11 for plugin editor windows
+          # native audio engine: ALSA (both engines); fonts + X11 dev libs (JUCE engine only)
           sudo apt-get install -y ninja-build libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxcomposite-dev
 
+      - name: Engine licence gate (cargo-deny, permissive licences only)
+        if: matrix.platform == 'ubuntu-22.04'
+        working-directory: apps/engine-rs
+        shell: bash
+        run: |
+          cargo install cargo-deny --locked --version 0.20.2
+          cargo deny check licenses bans sources
+
+      - name: Build native audio engine (Rust, JUCE-free; VST3 + CLAP host)
+        shell: bash
+        working-directory: apps/engine-rs
+        run: |
+          if [ "${{ matrix.platform }}" = macos-latest ]; then
+            cargo build --release --target aarch64-apple-darwin
+            cargo build --release --target x86_64-apple-darwin
+            mkdir -p target/release
+            lipo -create -output target/release/auduio-engine target/aarch64-apple-darwin/release/auduio-engine target/x86_64-apple-darwin/release/auduio-engine
+          else
+            cargo build --release
+          fi
+          cargo test --release
+
+      - name: Engine self-test (Rust engine, protocol, no plugins needed)
+        shell: bash
+        run: |
+          exe=engine-rs/target/release/auduio-engine
+          [ -f "$exe.exe" ] && exe="$exe.exe"
+          "$exe" --version
+          printf '{"id":1,"cmd":"hello"}\n{"id":2,"cmd":"plugins.list"}\n{"id":3,"cmd":"quit"}\n' | AUDUIO_ENGINE_DATA="$RUNNER_TEMP/auduio-rs" "$exe" | tee engine-rs-selftest.txt
+          grep -q '"id":1,"ok":true' engine-rs-selftest.txt
+          grep -q '"id":3,"ok":true' engine-rs-selftest.txt
+
       - name: Cache JUCE download
+        if: matrix.engine == 'juce'
         uses: actions/cache@v4
         with:
           path: apps/engine/build/_deps
           key: juce-8.0.12-${{ matrix.platform }}
 
       - name: Build native audio engine (JUCE, VST3/AU host)
+        if: matrix.engine == 'juce'
         shell: bash
         run: |
           cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release ${{ matrix.engine_cmake }}
           cmake --build engine/build --config Release --parallel
-          node scripts/place-engine.mjs ${{ matrix.engine_triples }}
 
-      - name: Engine self-test (protocol, no plugins needed)
+      - name: Engine self-test (JUCE engine, protocol, no plugins needed)
+        if: matrix.engine == 'juce'
         shell: bash
         run: |
           exe=engine/build/auduio-engine_artefacts/Release/auduio-engine
@@ -83,6 +129,10 @@ jobs:
           "$exe" --version
           printf '{"id":1,"cmd":"hello"}\n{"id":2,"cmd":"plugins.list"}\n{"id":3,"cmd":"quit"}\n' | AUDUIO_ENGINE_DATA="$RUNNER_TEMP/auduio" "$exe" | tee engine-selftest.txt
           grep -q '"id":1,"ok":true' engine-selftest.txt
+
+      - name: Bundle the chosen engine (${{ matrix.engine }})
+        shell: bash
+        run: AUDUIO_ENGINE_IMPL=${{ matrix.engine }} node scripts/place-engine.mjs ${{ matrix.engine_triples }}
 
       - name: Install
         run: npm ci || npm install
@@ -107,7 +157,7 @@ jobs:
           projectPath: apps
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('Auduio {0}', github.ref_name) || '' }}
-          releaseBody: 'Desktop installers for Auduio. macOS: open the .dmg. Windows: run the .msi or -setup.exe. Linux: .deb or .AppImage (chmod +x). The desktop app can load VST3 plugins (and AU on macOS): open the browser sidebar, Plugins, Scan.'
+          releaseBody: 'Desktop installers for Auduio. macOS: open the .dmg. Windows: run the .msi or -setup.exe. Linux: .deb or .AppImage (chmod +x). The desktop app can load VST3 plugins (plus CLAP on Windows and Linux, AU on macOS): open the browser sidebar, Plugins, Scan.'
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

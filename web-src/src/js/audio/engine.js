@@ -5,14 +5,17 @@ import { Adaptive } from './adaptive.js';
 import { KeyFollower } from './keyfollow.js';
 import { TempoAnalyzer, TempoFollower } from './tempo.js';
 import { MidiFxChain } from './midifx.js';
+import { SeqRuntime } from './sequencer.js';
 
 const dbToLin = (db) => (db <= -60 ? 0 : Math.pow(10, db / 20));
 
 export class Engine {
   constructor() {
     this.ctx = null;
+    this.seq = new SeqRuntime(this); // step sequencer (sequencer.js)
     this.tracks = new Map();   // id -> node bundle
     this.buffers = new Map();  // bufferId -> AudioBuffer
+    this.lazyLoader = null; this.pendingBuffers = new Map(); // drum-pad samples load on first use (see ensureBuffer)
     this.inputs = new Map();   // deviceId -> {stream, source, splitter, channels}
     this.meters = new Map();   // id -> {peak:[l,r], rms:[l,r]}
     this.playing = false;
@@ -170,10 +173,28 @@ export class Engine {
     const native = this.instrumentFactory && this.instrumentFactory(this.ctx, t);
     if (native) { n.inst = native; n.inst.output.connect(n.input); n.midi = new MidiFxChain(this, t, n.inst); return; }
     n.inst = createInstrument(this.ctx, t.inst);
-    const locks = t.inst && t.inst.type === n.inst.type && t.inst.locks;
+    const locks = t.inst && t.inst.type === n.inst.type && t.inst.locks, pads = t.inst && t.inst.pads;
     t.inst = { type: n.inst.type, values: n.inst.values }; if (locks) t.inst.locks = locks;
+    if (n.inst.setPads) { if (pads) t.inst.pads = pads; n.inst.setPads(t.inst.pads, this.padBufs()); this.prefetchPads(t); }
     n.inst.output.connect(n.input);
     n.midi = new MidiFxChain(this, t, n.inst);
+  }
+  // ---- drum pad samples: loaded lazily (from IndexedDB) the first time they are needed
+  ensureBuffer(id) {
+    const b = this.buffers.get(id); if (b) return Promise.resolve(b);
+    if (!this.lazyLoader) return Promise.resolve(null);
+    if (!this.pendingBuffers.has(id)) this.pendingBuffers.set(id, Promise.resolve().then(() => this.lazyLoader(id)).then((buf) => { this.pendingBuffers.delete(id); if (buf) this.buffers.set(id, buf); return buf || null; }, () => { this.pendingBuffers.delete(id); return null; }));
+    return this.pendingBuffers.get(id);
+  }
+  padBufs() { return this._padBufs || (this._padBufs = { get: (id) => this.buffers.get(id), want: (id) => this.ensureBuffer(id) }); }
+  syncPads(t) { const n = this.tracks.get(t.id); if (n && n.inst && n.inst.setPads) { n.inst.setPads(t.inst && t.inst.pads, this.padBufs()); this.prefetchPads(t); } }
+  // notes this drum track can play (clips + sequencer): load their samples ahead of time
+  prefetchPads(t) {
+    const pads = t.inst && t.inst.pads; if (!pads || !this.lazyLoader) return Promise.resolve();
+    const used = new Set();
+    for (const c of [...(t.slots || []), ...(t.arrangement || [])]) if (c && c.type === 'midi') (c.notes || []).forEach((x) => used.add(x.n));
+    if (t.seq) (t.seq.patterns || []).forEach((p) => (p.steps || []).forEach((st) => st && st.on && (st.n || []).forEach((x) => used.add(x))));
+    return Promise.all([...used].filter((n) => pads[n]).map((n) => this.ensureBuffer(pads[n].bufferId)));
   }
   // MIDI effects chain (t.midiFx) changed: rebuild the chain in front of the instrument
   setMidiFx(t) {
@@ -460,6 +481,7 @@ export class Engine {
     if (!keepAudition) this.stopAudition();
     if (this.playing) return;
     this.resume();
+    if (this.project && this.lazyLoader) this.project.tracks.forEach((t) => { if (t.inst && t.inst.pads) this.prefetchPads(t); });
     if (fromPos != null) this.startPos = fromPos;
     this.startCtxTime = Math.max(this.ctx.currentTime + (keepAudition ? 0.03 : 0.06), atCtxTime || 0);
     const L = this.loopRegion();
@@ -476,6 +498,7 @@ export class Engine {
     const pos = this.position();
     this.playing = false; this.loopSpan = null;
     this.tracks.forEach((n) => { this.stopTrackSources(n, 0, true); n.queued = null; if (n.inst) (n.midi || n.inst).allOff(); });
+    if (this.seq) { this.seq.reset(); if (this.seq.midiOut) this.seq.midiOut.allOff(); }
     if (this.autoRec.state === 'waiting') this.cancelAutoRecord();
     // pressing stop while stopped returns to start (like most DAWs)
     this.startPos = pos === this.startPos ? 0 : pos;
@@ -745,9 +768,10 @@ export class Engine {
   scheduleMidi() {
     const now = this.ctx.currentTime, from = Math.max(this.midiSchedEnd || now, now), to = now + 0.15;
     if (to <= from) return;
-    const bd = this.beatDur;
+    const bd = this.beatDur, segs = this.loopSegments(from, to);
     for (const t of this.project.tracks) {
       const n = this.tracks.get(t.id); if (!n || !n.inst) continue;
+      if (t.seq && t.seq.on && this.seq) for (const sg of segs) { try { this.seq.schedule(t, n, sg, sg.p0 + (sg.c1 - sg.c0)); } catch (e) { console.error(e); } }
       const loops = [n.sessionMidiPrev, n.sessionMidi].filter(Boolean);
       if (loops.length) {
         for (const L of loops) {

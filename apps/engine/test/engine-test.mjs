@@ -1,5 +1,6 @@
 // Protocol test for auduio-engine with a real VST3 (Surge XT). Run:
 //   AUDUIO_ENGINE=engine/build/auduio-engine_artefacts/Release/auduio-engine AUDUIO_TEST_VST3_DIR=/path/with/vst3s node engine/test/engine-test.mjs
+// CLAP: AUDUIO_TEST_FORMAT=CLAP [AUDUIO_TEST_CLAP_DIR=/path/with/claps] (Rust engine only).
 // Optional: DISPLAY set (e.g. Xvfb) -> also opens the plugin editor window.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
@@ -7,9 +8,16 @@ const HERE = path.dirname(new URL(import.meta.url).pathname);
 const EXE = process.env.AUDUIO_ENGINE || path.join(HERE, '..', 'build', 'auduio-engine_artefacts', 'Release', 'auduio-engine');
 const VST3 = process.env.AUDUIO_TEST_VST3_DIR || '/workspace/tools/plugins/lib/vst3';
 const WANT = process.env.AUDUIO_TEST_PLUGIN || 'Surge XT';
+const FORMAT = (process.env.AUDUIO_TEST_FORMAT || 'VST3').toUpperCase(); // VST3 or CLAP (CLAP needs the Rust engine)
+const CLAP = process.env.AUDUIO_TEST_CLAP_DIR || '/workspace/tools/plugins/lib/clap';
 const results = []; const ok = (n, c, i = '') => { results.push({ name: n, pass: !!c, info: i }); console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${i ? '  — ' + String(i).slice(0, 400) : ''}`); };
+// AUDUIO_TEST_WINE=1: the engine is a Windows build run under wine, so paths handed to it are mapped to Z:\...
+const WINE = process.env.AUDUIO_TEST_WINE === '1';
+const ep = (p) => (WINE && p.startsWith('/') ? 'Z:' + p.replace(/\//g, '\\') : p);
+const hp = (p) => (WINE && /^Z:/i.test(p || '') ? p.slice(2).replace(/\\/g, '/') : p);
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'auduio-engine-'));
-const proc = spawn(EXE, [], { env: { ...process.env, AUDUIO_ENGINE_DATA: data, AUDUIO_VST3_PATH: VST3 }, stdio: ['pipe', 'pipe', 'pipe'] });
+const SINK = path.join(data, 'midi-sink.log');
+const proc = spawn(EXE, [], { env: { ...process.env, AUDUIO_MIDI_TEST_SINK: ep(SINK), AUDUIO_ENGINE_DATA: ep(data), AUDUIO_VST3_PATH: ep(VST3), ...(FORMAT === 'CLAP' ? { AUDUIO_CLAP_PATH: ep(CLAP) } : {}) }, stdio: ['pipe', 'pipe', 'pipe'] });
 let buf = '', nextId = 1; const pending = new Map(), events = [], waiters = [];
 proc.stdout.on('data', (d) => {
   buf += d; let i;
@@ -31,7 +39,7 @@ async function loadRandomizer() {
 }
 try {
   const ready = await waitEvent('ready', 20000);
-  ok('Engine starts and announces itself (ready event: version, protocol, formats)', ready.engine === 'auduio-engine' && ready.protocol === 1 && ready.formats.includes('VST3'), JSON.stringify({ v: ready.version, juce: ready.juce, formats: ready.formats, os: ready.os }));
+  ok('Engine starts and announces itself (ready event: version, protocol, formats)', ready.engine === 'auduio-engine' && ready.protocol === 1 && ready.formats.includes(FORMAT), JSON.stringify({ v: ready.version, juce: ready.juce, formats: ready.formats, os: ready.os }));
   const bad = await req('nope').catch((e) => e.message);
   ok('Unknown commands get an error reply (engine keeps running)', /unknown command/.test(bad), bad);
   proc.stdin.write('{not json\n'); await new Promise((r) => setTimeout(r, 100));
@@ -41,15 +49,15 @@ try {
   const done = await waitEvent('scan.done', 300000);
   const prog = events.filter((e) => e.event === 'scan.progress').length;
   const names = done.plugins.map((p) => `${p.name} (${p.format}${p.isInstrument ? ', instrument' : ''})`);
-  ok('Scan (each file probed in its own child process) finds the VST3s in the plugin folder', st.started && done.plugins.some((p) => p.name === WANT), `${names.join(', ')} | failed: ${JSON.stringify(done.failed)} | progress events ${prog} | ${Date.now() - t0} ms | paths ${done.paths.join(':')}`);
+  ok('Scan (each file probed in its own child process) finds the ' + FORMAT + 's in the plugin folder', st.started && done.plugins.some((p) => p.name === WANT && p.format === FORMAT), `${names.join(', ')} | failed: ${JSON.stringify(done.failed)} | progress events ${prog} | ${Date.now() - t0} ms | paths ${done.paths.join(':')}`);
   const cache = JSON.parse(fs.readFileSync(path.join(data, 'plugin-cache.json'), 'utf8'));
   ok('Scan results are cached on disk', cache.plugins.length === done.plugins.length);
-  const surge = done.plugins.find((p) => p.name === WANT);
+  const surge = done.plugins.find((p) => p.name === WANT && p.format === FORMAT);
   const L = await req('plugin.load', { trackId: 't1', uid: surge.uid }, 120000);
   const visible = L.params.filter((p) => !p.hidden);
   ok(`Loads ${WANT} and enumerates its parameters (name, default, value, text, steps)`, L.instanceId > 0 && visible.length > 50 && L.outputs >= 2, `instance ${L.instanceId}, ${L.params.length} params (${visible.length} visible), editor ${L.hasEditor}, first: ${visible.slice(0, 4).map((p) => `${p.name}=${p.text}`).join(', ')}`);
-  const tone = await req('render', { trackId: 't1', seconds: 1.5, notes: [{ t: 0.05, n: 60, v: 110, d: 0.8 }, { t: 0.05, n: 64, v: 110, d: 0.8 }], wav: path.join(data, 'render-default.wav') }, 120000);
-  ok('Offline render: MIDI notes in -> audio out (non-silent, written to WAV)', tone.peak > 0.01 && fs.existsSync(tone.wav), JSON.stringify(tone));
+  const tone = await req('render', { trackId: 't1', seconds: 1.5, notes: [{ t: 0.05, n: 60, v: 110, d: 0.8 }, { t: 0.05, n: 64, v: 110, d: 0.8 }], wav: ep(path.join(data, 'render-default.wav')) }, 120000);
+  ok('Offline render: MIDI notes in -> audio out (non-silent, written to WAV)', tone.peak > 0.01 && fs.existsSync(hp(tone.wav)), JSON.stringify(tone));
   const silent = await req('render', { trackId: 't1', seconds: 0.5, notes: [] });
   ok('No notes -> (near) silence', silent.peak < tone.peak * 0.5, JSON.stringify(silent));
   // parameter set + readback
@@ -68,7 +76,7 @@ try {
   const kept = visible.filter((p) => R.isKeptParam({ key: String(p.i), label: p.name, plugin: true }));
   const keptOk = kept.every((p) => Math.abs(after.find((q) => q.i === p.i).value - p.value) < 1e-6);
   ok('Musical randomize of the plugin (app logic): many params change, volume/mute/tuning-type params stay', Object.keys(ch).length > 100 && keptOk, `${Object.keys(ch).length} changed, ${kept.length} kept (e.g. ${kept.slice(0, 6).map((p) => p.name).join(', ')})`);
-  const tone2 = await req('render', { trackId: 't1', seconds: 1.5, notes: [{ t: 0.05, n: 60, v: 110, d: 0.8 }], wav: path.join(data, 'render-random.wav') }, 120000);
+  const tone2 = await req('render', { trackId: 't1', seconds: 1.5, notes: [{ t: 0.05, n: 60, v: 110, d: 0.8 }], wav: ep(path.join(data, 'render-random.wav')) }, 120000);
   ok('Musically randomized patch still makes sound and does not clip', tone2.peak > 0.005 && tone2.peak <= 1.0 && Math.abs(tone2.rms - tone.rms) > 1e-5, JSON.stringify({ before: tone.rms, after: tone2.rms, peak: tone2.peak }));
   // state save / restore
   const state = await req('state.get', { instanceId: L.instanceId });
@@ -95,7 +103,7 @@ try {
     await req('editor.close', { instanceId: L.instanceId });
   } else ok('Editor window test skipped (no DISPLAY)', true);
   // a second instance on another track, then unload
-  const fx = done.plugins.find((p) => /Effects/.test(p.name));
+  const fx = done.plugins.find((p) => /Effects/.test(p.name) && p.format === FORMAT);
   if (fx) {
     const F = await req('plugin.load', { trackId: 't1', uid: fx.uid }, 120000);
     const chainRender = await req('render', { trackId: 't1', seconds: 1, notes: [{ t: 0.05, n: 67, v: 100, d: 0.5 }] }, 120000);
@@ -105,11 +113,31 @@ try {
   await req('track.remove', { trackId: 't1' });
   const gone = await req('plugin.params', { instanceId: L.instanceId }).catch((e) => e.message);
   ok('track.remove unloads its plugins', /unknown instanceId/.test(gone), gone);
+  // hardware MIDI out (Rust engine: desktop webviews have no Web MIDI)
+  const hello = await req('hello');
+  if (hello.midiOut) {
+    const L2 = await req('midiout.list');
+    ok('MIDI out: lists output ports (test sink present)', L2.ports.some((p) => p.name === 'Auduio Test Sink'), JSON.stringify(L2).slice(0, 300));
+    const t0 = Date.now();
+    await req('midiout.send', { port: 'Auduio Test Sink', events: [{ d: [0x90, 60, 100], dt: 0 }, { d: [0x80, 60, 0], dt: 0.25 }, { d: [0xB1, 7, 90], dt: 0.1 }] });
+    await new Promise((r) => setTimeout(r, 500));
+    const lines = fs.existsSync(SINK) ? fs.readFileSync(SINK, 'utf8').trim().split('\n').map((l) => l.split(' ')) : [];
+    const us = (hex) => { const l = lines.find((x) => x.slice(1).join(' ') === hex); return l ? +l[0] : NaN; };
+    const on = us('90 3c 64'), cc = us('b1 07 5a'), off = us('80 3c 00');
+    ok('MIDI out: events leave in time order at their scheduled delays', lines.length === 3 && Math.abs((off - on) / 1000 - 250) < 25 && Math.abs((cc - on) / 1000 - 100) < 25, JSON.stringify(lines));
+    const bad = await Promise.all([[0xF0, 1, 2], [0xF8], [0x90, 200, 1], [0x90, 60]].map((d) => req('midiout.send', { port: 'Auduio Test Sink', events: [{ d, dt: 0 }] }).then(() => 'accepted', (e) => 'rejected')));
+    ok('MIDI out: rejects SysEx, realtime and malformed messages', bad.every((x) => x === 'rejected'), bad.join(','));
+    await req('midiout.send', { port: 'Auduio Test Sink', events: [{ d: [0x90, 64, 100], dt: 0.3 }] });
+    await req('midiout.allOff', { port: 'Auduio Test Sink' });
+    await new Promise((r) => setTimeout(r, 450));
+    const after = fs.readFileSync(SINK, 'utf8').trim().split('\n').slice(3);
+    ok('MIDI out: allOff drops queued notes and sends All Notes Off on all 16 channels', !after.some((l) => / 90 40 64$/.test(l)) && after.filter((l) => / 7b 00$/.test(l)).length === 16, after.length + ' lines');
+  } else ok('MIDI out test skipped (engine has no midiOut)', true);
   await req('quit');
   code = await new Promise((r) => { const t = setTimeout(() => r(-1), 10000); proc.on('exit', (c) => { clearTimeout(t); r(c); }); });
   ok('Engine quits cleanly on request', code === 0, 'exit ' + code);
 } catch (e) { ok('engine test crashed', false, e.stack + '\nSTDERR: ' + stderr.slice(-2000)); proc.kill(); }
 const passed = results.filter((r) => r.pass).length;
 console.log(`\n${passed}/${results.length} engine checks passed`);
-fs.writeFileSync(path.join(HERE, 'last-results-engine.json'), JSON.stringify(results, null, 2));
+fs.writeFileSync(path.join(HERE, FORMAT === 'VST3' ? 'last-results-engine.json' : `last-results-engine-${FORMAT.toLowerCase()}.json`), JSON.stringify(results, null, 2));
 process.exit(passed === results.length ? 0 : 1);

@@ -48,8 +48,8 @@ try {
     const secs = [...b.querySelectorAll('.br-sec')].map((s) => ({ id: s.dataset.sec, label: s.querySelector('.br-sec-label').textContent, n: s.querySelectorAll('.br-item').length, svg: !!s.querySelector('.br-sec-head svg') }));
     return { w: r.width, visible: r.width > 100 && getComputedStyle(b).display !== 'none', secs, items: [...b.querySelectorAll('.br-item .br-label')].map((x) => x.textContent) };
   });
-  ok('Browser sidebar is shown on desktop with Instruments, MIDI Effects, Audio Effects, Racks and Plugins sections (SVG icons)',
-    sb.visible && sb.secs.map((s) => s.id).join() === 'inst,midifx,fx,racks,plugins' && sb.secs.every((s) => s.svg), JSON.stringify(sb.secs) + ' w=' + sb.w);
+  ok('Browser sidebar is shown on desktop with Instruments, MIDI Effects, Audio Effects, Racks, My Samples and Plugins sections (SVG icons)',
+    sb.visible && sb.secs.map((s) => s.id).join() === 'inst,midifx,fx,racks,samples,plugins' && sb.secs.every((s) => s.svg), JSON.stringify(sb.secs) + ' w=' + sb.w);
   ok('Lists the 3 native instruments, 6 MIDI effects (Arpeggiator, Chord, Scale, Note Length, Velocity, Random) and the 12 audio effects',
     ['Analog Synth', 'Wavetable Synth', 'Drum Kit', 'Arpeggiator', 'Chord', 'Scale', 'Note Length', 'Velocity', 'Random', 'Parametric EQ', 'Compressor', 'Reverb', 'Delay', 'Pitch Correct', 'Tremolo'].every((x) => sb.items.includes(x)) && sb.secs[1].n === 6 && sb.secs[2].n === 12, sb.items.join(', '));
   const plug = await P(page, () => { const s = document.querySelector('.br-sec[data-sec=plugins]'); s.scrollIntoView(); const n = s.querySelector('.br-note'); return { note: n && n.textContent, cls: n && n.className, items: s.querySelectorAll('.br-item').length }; });
@@ -250,7 +250,7 @@ try {
   // ---------------- collapse / expand
   await page.click('#browser .br-head .br-toggle'); await sleep(200);
   const col = await P(page, () => ({ w: document.querySelector('#browser').getBoundingClientRect().width, rail: document.querySelectorAll('#browser .br-rail').length, pref: JSON.parse(localStorage.getItem('auduio.prefs')).browserOpen }));
-  ok('Collapse button shrinks the browser to a thin icon rail and remembers it', col.w <= 40 && col.rail === 5 && col.pref === false, JSON.stringify(col));
+  ok('Collapse button shrinks the browser to a thin icon rail and remembers it', col.w <= 40 && col.rail === 6 && col.pref === false, JSON.stringify(col));
   await shot(page, 'sidebar-collapsed');
   await page.click('body', { position: { x: 700, y: 400 } }).catch(() => {}); await P(page, () => document.activeElement && document.activeElement.blur());
   await page.keyboard.press('b'); await sleep(200);

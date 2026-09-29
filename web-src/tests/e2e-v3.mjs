@@ -342,6 +342,8 @@ try {
     const chip = await P.evaluate(() => { const r = document.querySelector('.ph-clip').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
     const srcTrack = await P.evaluate(() => __daw.S.selected);
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [chip] }); await sleep(650); await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(250);
+    // v0.4.x: long-press opens the clip sheet (Split here / Split in half / Move / Delete); Move picks the clip up
+    await P.tap('.ph-sheet .ph-move'); await sleep(250);
     const carrying = await P.evaluate(() => !!__daw.phone.carry && !!document.querySelector('.ph-carry'));
     await P.tap('.ph-arrow[aria-label="Next track"]'); await sleep(250);
     await shot(P, `${tag}-place-here`);

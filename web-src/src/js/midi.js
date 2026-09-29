@@ -35,3 +35,62 @@ export const MIDI = {
       : 'This browser has no Web MIDI support. Use Chrome, Edge or Firefox on desktop/Android for MIDI keyboards; the on-screen keyboard and piano roll still work.';
   },
 };
+
+// Web MIDI output for the step sequencer (external synths, drum machines, hardware). Only note on/off and
+// all-notes-off are sent; no SysEx (access is requested with sysex:false). Timestamps are converted from
+// AudioContext time to the performance.now() clock Web MIDI uses, including the audio output latency so
+// hardware and Auduio's own sound line up.
+// Desktop app (Tauri) on macOS/Linux: the webview has no Web MIDI, so output goes through the native audio
+// engine instead (engine command midiout.*, channel messages only). Engine ports get ids "engine:<name>".
+export const ENGINE_PREFIX = 'engine:';
+export const engineMidi = {
+  client: null, ports: [],
+  attach(client) { this.client = client && client.info && client.info.midiOut ? client : null; return this.refresh(); },
+  async refresh() {
+    if (!this.client) { this.ports = []; return this.ports; }
+    try { const r = await this.client.request('midiout.list', {}, 5000); this.ports = (r.ports || []).slice(0, 64).map((p) => ({ id: ENGINE_PREFIX + p.id, name: String(p.name || 'MIDI output').slice(0, 64), state: 'connected', engine: true })); }
+    catch (e) { this.ports = []; }
+    return this.ports;
+  },
+  get available() { return !!this.client; },
+};
+export function outputs() {
+  const web = MIDI.access ? [...MIDI.access.outputs.values()].map((o) => ({ id: o.id, name: (o.name || 'MIDI output').slice(0, 64), state: o.state })) : [];
+  const names = new Set(web.map((o) => o.name));
+  return web.concat(engineMidi.ports.filter((p) => !names.has(p.name)));
+}
+export function createMidiOut(getCtx) {
+  const used = new Map(); // port id -> Set(channel index)
+  const find = (id) => {
+    if (id && id.startsWith(ENGINE_PREFIX)) return engineMidi.client && engineMidi.ports.some((p) => p.id === id) ? { id, engine: id.slice(ENGINE_PREFIX.length) } : null;
+    const outs = MIDI.access ? [...MIDI.access.outputs.values()] : [];
+    const o = (id && outs.find((x) => x.id === id)) || (!id ? outs[0] : null) || null;
+    if (o || id) return o;
+    const e = engineMidi.client && engineMidi.ports[0]; // "First output" with no Web MIDI
+    return e ? { id: e.id, engine: e.id.slice(ENGINE_PREFIX.length) } : null;
+  };
+  const delay = (ctx, at) => Math.max(0, at - ctx.currentTime + (ctx.outputLatency || ctx.baseLatency || 0));
+  const stamp = (ctx, at) => performance.now() + delay(ctx, at) * 1000;
+  return {
+    sent: 0,
+    note(portId, ch, n, v, at, dur) {
+      const o = find(portId), ctx = getCtx(); if (!o || !ctx) return false;
+      const c = (Math.max(1, Math.min(16, ch | 0)) - 1) & 15, nn = n & 127, vv = Math.max(1, Math.min(127, v | 0));
+      try {
+        if (o.engine) engineMidi.client.post('midiout.send', { port: o.engine, events: [{ d: [0x90 | c, nn, vv], dt: delay(ctx, at) }, { d: [0x80 | c, nn, 0], dt: delay(ctx, at + Math.max(0.005, dur)) }] });
+        else { o.send([0x90 | c, nn, vv], stamp(ctx, at)); o.send([0x80 | c, nn, 0], stamp(ctx, at + Math.max(0.005, dur))); }
+        this.sent++;
+      } catch (e) { return false; }
+      if (!used.has(o.id)) used.set(o.id, new Set()); used.get(o.id).add(c);
+      return true;
+    },
+    allOff() {
+      for (const [id, chs] of used) {
+        const o = find(id); if (!o) continue;
+        if (o.engine) { try { engineMidi.client.post('midiout.allOff', { port: o.engine }); } catch (e) {} continue; }
+        for (const c of chs) { try { if (o.clear) o.clear(); o.send([0xb0 | c, 123, 0]); } catch (e) {} }
+      }
+      used.clear();
+    },
+  };
+}

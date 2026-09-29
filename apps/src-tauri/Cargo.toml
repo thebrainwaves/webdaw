@@ -1,6 +1,6 @@
 [package]
 name = "auduio"
-version = "0.4.0"
+version = "0.5.0"
 description = "Auduio - a recording machine for your computer"
 authors = ["thebrainwaves"]
 license = "MIT"

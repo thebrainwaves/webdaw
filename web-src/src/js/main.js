@@ -22,7 +22,11 @@ import { tap, addViz, drawSpectrum, drawCurve, drawScope, drawHistory, drawPitch
 import { openPianoRoll } from './ui/pianoroll.js';
 import { History } from './history.js';
 import { validateProject, validateRack } from './validate.js';
-import { MIDI } from './midi.js';
+import { MIDI, createMidiOut, engineMidi } from './midi.js';
+import { createSeqView } from './ui/seqview.js';
+import { createDrumRack } from './ui/drumrack.js';
+import { lockKey } from './audio/sequencer.js';
+import { splitClip, splitAllAt, splitAtRange, deleteSection } from './clipedit.js';
 import { MIDI_FX_TYPES, MIDI_FX_HELP, midiFxDefaults } from './audio/midifx.js';
 import { randomizeValues } from './randomize.js';
 import { createBrowser } from './ui/browser.js';
@@ -35,6 +39,7 @@ const S = { project: null, selected: null, view: 'session', zoom: 40, sel: null,
   devices: { inputs: [], outputs: [] }, follow: false, expanded: new Set(), learn: { active: false, target: null }, slotRec: new Map(), midiRec: null };
 const history = new History(() => JSON.stringify(S.project), (snap) => restoreSnapshot(snap));
 window.__daw = { engine, S, history, MIDI }; // debugging / automated tests
+let seqView = null, drumRack = null; // step sequencer view (ui/seqview.js), created after the phone UI helpers
 
 // ------------------------------------------------------------------ utils
 let saveTimer;
@@ -202,6 +207,7 @@ function normalise(project) {
     t.midiInput = t.midiInput || 'all'; t.fromBar = t.fromBar || 1;
     if (t.kind === 'midi' && !t.inst) t.inst = { type: 'synth', values: {} };
     if (t.kind === 'midi') t.midiFx = Array.isArray(t.midiFx) ? t.midiFx : [];
+    if (t.kind !== 'midi') delete t.seq;
     t.groupId = t.groupId || null; t.folded = !!t.folded;
     t.arm = false; // never auto-open inputs on load
   }
@@ -258,6 +264,7 @@ function restoreSnapshot(json) {
       if (n.inst && o.inst && t.inst && o.inst.type === t.inst.type) { for (const [k, v] of Object.entries(t.inst.values)) if (n.inst.values[k] !== v) n.inst.set(k, v); t.inst.values = n.inst.values; }
       else engine.setInstrument(t);
     } else if (n.inst) t.inst.values = n.inst.values;
+    if (n.inst && n.inst.setPads) engine.syncPads(t);
     if (n.midi) { n.midi.track = t; n.midi.sync(); }
     engine.syncTrack(t); engine.syncAdaptive(t);
     if (JSON.stringify(o.arrangement) !== JSON.stringify(t.arrangement)) engine.rescheduleTrack(t);
@@ -612,6 +619,7 @@ function noteEvent(t, note, vel, on) {
   const n = engine.tracks.get(t.id); if (!n || !n.inst) return;
   if (engine.ctx.state !== 'running') engine.resume();
   const dst = n.midi || n.inst; on ? dst.noteOn(note, vel) : dst.noteOff(note);
+  if (t.seq && seqView) seqView.onNote(t, note, vel, on);
   const pos = engine.position(), now = engine.ctx.currentTime;
   const R = S.midiRec && S.midiRec.tracks.get(t.id);
   if (R && engine.recording) {
@@ -657,6 +665,7 @@ function paramDef(m) {
 }
 // Set any device parameter live (knob, MIDI CC). Undo steps are coalesced per parameter.
 function setParam(trackId, fx, key, v, fromMidi = false) {
+  if (seqView && seqView.capture(trackId, fx, key, v)) return; // sequencer P-Lock mode: becomes a step lock
   if (typeof fx === 'string' && fx.startsWith('plugin:')) { if (S.pluginApi) S.pluginApi.setParam(fx.slice(7), +key, v); return; }
   history.push('Change ' + key, `p:${trackId}:${fx}:${key}`);
   if (fx === 'inst') { const n = engine.tracks.get(trackId); if (n && n.inst) n.inst.set(key, v); }
@@ -732,6 +741,7 @@ function clipOp(op) {
     change('Paste clip', () => { t.arrangement.push(c); trimUnder(t, c); engine.rescheduleTrack(t); });
     S.sel = { kind: 'arr', trackId: t.id, clipId: c.id }; renderArrange(); return;
   }
+  if (op === 'split' && (!sc || !sc.c || S.sel.kind !== 'arr')) { splitTrackAtPlayhead(); return; }
   if (!sc || !sc.c) return;
   const { t, c } = sc;
   if (op === 'del') {
@@ -748,14 +758,49 @@ function clipOp(op) {
   }
   if (op === 'split' && S.sel.kind === 'arr') {
     const p = engine.position();
-    if (p <= c.start || p >= c.start + c.duration) return toast('Move the playhead inside the selected clip to split.');
-    const cut = p - c.start;
-    change('Split clip', () => {
-      const right = { ...JSON.parse(JSON.stringify(c)), id: uid('c'), start: p, offset: (c.offset || 0) + cut * clipRate(c), duration: c.duration - cut };
-      c.duration = cut; t.arrangement.push(right); engine.rescheduleTrack(t);
-    });
-    renderArrange();
+    if (p <= c.start || p >= c.start + c.duration) return splitTrackAtPlayhead(t);
+    splitClipAt(t, c, p);
   }
+}
+// ------------------------------------------------------------------ clip cutting (Ctrl/Cmd+E, Cut tool, loop edges, delete section)
+function splitClipAt(t, c, p) {
+  if (!(p > c.start + 1e-6 && p < c.start + c.duration - 1e-6)) { toast('That point is not inside the clip.'); return null; }
+  let right = null;
+  change('Split clip', () => { right = splitClip(t.arrangement, c, p, () => uid('c'), clipRate); engine.rescheduleTrack(t); });
+  haptic(12); renderArrange(); if (typeof phone !== 'undefined' && phone.active) phone.render();
+  return right;
+}
+function splitTrackAtPlayhead(t = track(S.selected)) {
+  const p = engine.position();
+  if (!t || !t.arrangement || !t.arrangement.some((c) => p > c.start + 1e-6 && p < c.start + c.duration - 1e-6)) return toast('Nothing to split: move the playhead over a clip (or select a clip) and press Ctrl/Cmd+E.', 2600);
+  change('Split at playhead', () => { splitAllAt(t.arrangement, p, () => uid('c'), clipRate); engine.rescheduleTrack(t); });
+  haptic(12); renderArrange(); toast('Split at ' + fmtPos(p), 1200);
+}
+const editTracks = () => S.project.tracks.filter((t) => t.kind !== 'group');
+function splitAtLoop() {
+  const L = S.project.loop; let n = 0;
+  change('Split at loop edges', () => { for (const t of editTracks()) { const k = splitAtRange(t.arrangement, L.start, L.end, () => uid('c'), clipRate); if (k) { n += k; engine.rescheduleTrack(t); } } });
+  if (!n) toast('No clips cross the loop edges.'); else toast(`Split ${n} clip${n === 1 ? '' : 's'} at the loop edges (${loopLabel()}).`, 2000);
+  renderArrange();
+}
+function deleteLoopSection(ripple) {
+  const L = S.project.loop, a = L.start, b = L.end;
+  change(ripple ? 'Cut out loop section' : 'Delete loop section', () => {
+    for (const t of editTracks()) { t.arrangement = deleteSection(t.arrangement, a, b, () => uid('c'), { ripple }, clipRate); engine.rescheduleTrack(t); }
+  });
+  S.sel = null; haptic(14); renderArrange();
+  toast(ripple ? `Removed ${loopLabel()} and closed the gap. Undo: Ctrl/Cmd+Z` : `Cleared ${loopLabel()} on all tracks. Undo: Ctrl/Cmd+Z`, 2600);
+}
+function setTool(tool) { S.tool = S.tool === tool ? null : tool; $('#arrangeView').classList.toggle('razor', S.tool === 'razor'); $$('.cut-btn').forEach((b) => { b.classList.toggle('on', S.tool === 'razor'); b.setAttribute('aria-pressed', String(S.tool === 'razor')); }); if (S.tool === 'razor') toast('Cut tool: click a clip where you want to cut it (Alt/Shift: no snap). Press X or Esc to leave.', 2600); }
+function editMenu(anchor) {
+  const r = anchor.getBoundingClientRect();
+  contextMenu(r.left, r.bottom + 2, [
+    { label: 'Split at playhead (Ctrl/Cmd+E)', fn: () => clipOp('split') },
+    { label: 'Cut tool: click to split (X)', fn: () => setTool('razor') },
+    { label: 'Split at loop edges', fn: () => splitAtLoop() },
+    '-', { label: 'Delete loop section (leave a gap)', fn: () => deleteLoopSection(false) },
+    { label: 'Cut out loop section (close the gap)', fn: () => deleteLoopSection(true) },
+  ]);
 }
 function renderToolsState() { syncBottomToSelection(); $$('.view-tools').forEach((vt) => { vt.querySelectorAll('button').forEach((b) => { if (/^(Copy|Dup|Del)$/.test(b.textContent)) b.disabled = !S.sel; if (b.textContent === 'Paste') b.disabled = !S.clipboard; if (b.dataset.needsArr) b.disabled = !(S.sel && S.sel.kind === 'arr'); }); }); }
 
@@ -1044,12 +1089,14 @@ function setZoom(z, anchorX) {
   const sc2 = $('#arrangeView .arr-scroll'); sc2.scrollLeft = t * S.zoom - ax; S._arrScroll = sc2.scrollLeft;
 }
 function renderArrange() {
-  const root = $('#arrangeView'); const prevTop = S._arrTop || 0; root.innerHTML = '';
+  const root = $('#arrangeView'); const prevTop = S._arrTop || 0; root.innerHTML = ''; root.classList.toggle('razor', S.tool === 'razor');
   if (prefs.laneH) root.style.setProperty('--lane-h', prefs.laneH + 'px'); else root.style.removeProperty('--lane-h');
   const len = arrLength(), W = len * S.zoom;
   const needArr = (label, title, fn) => { const b = h('button', { class: 'adv', title, onclick: fn, disabled: !(S.sel && S.sel.kind === 'arr') }, label); b.dataset.needsArr = '1'; return b; };
   root.append(viewTools([
-    needArr('Split', 'Split the selected clip at the playhead (S)', () => clipOp('split')),
+    h('button', { class: 'split-btn', title: 'Split at the playhead (Ctrl/Cmd+E or S): the selected clip, or every clip under the playhead on the selected track', onclick: () => clipOp('split') }, icon('cut'), 'Split'),
+    h('button', { class: 'cut-btn' + (S.tool === 'razor' ? ' on' : ''), 'aria-pressed': String(S.tool === 'razor'), title: 'Cut tool (X): click a clip where you want to cut it', onclick: () => setTool('razor') }, 'Cut tool'),
+    h('button', { class: 'edit-btn', title: 'More cutting: split at the loop edges, delete or cut out the loop section', 'aria-label': 'Edit menu', onclick: (e) => editMenu(e.currentTarget) }, 'Edit', icon('chevDown')),
     needArr('Quantize…', 'Quantize: move notes/hits in the selected clip onto the beat grid', () => quantizeDialog()),
     needArr('BPM…', 'Detect the tempo of the selected audio clip and optionally use it as the project tempo', () => { const sc = selectedClip(); if (sc && sc.c && sc.c.type !== 'midi') clipTempoDialog(sc.t, sc.c, 'arr'); else toast('Select an audio clip first.'); }),
     h('button', { class: 'snap-btn' + (prefs.snap !== false ? ' on' : ''), title: 'Snap clips to the beat grid when placing or moving them. Hold Alt or Shift while dropping to place freely.', onclick: () => toggleSnap() }, prefs.snap !== false ? 'Snap: on' : 'Snap: off'),
@@ -1166,12 +1213,15 @@ function arrClip(t, c) {
   el.addEventListener('dblclick', (e) => { e.stopPropagation(); if (c.type === 'midi') editMidiClip(t, c); });
   longPress(el, (x, y) => {
     S.sel = { kind: 'arr', trackId: t.id, clipId: c.id }; renderToolsState();
+    const r = el.getBoundingClientRect(), here = snapPos(c.start + (x - r.left) / S.zoom);
     contextMenu(x, y, [
+      { label: 'Split here', fn: () => splitClipAt(t, c, here) },
       { label: 'Pick up / move… (then tap “Place here”)', fn: () => pickUp({ kind: 'arr', t, c }) },
       { label: 'Move to Session (first free slot)', fn: () => { const i = t.slots.findIndex((x) => !x); placeClip({ kind: 'arr', t, c }, { kind: 'slot', trackId: t.id, slot: i < 0 ? t.slots.length : i }); toast('Moved to the Session view'); } },
       c.type === 'midi' ? { label: 'Edit notes (piano roll)', fn: () => editMidiClip(t, c) } : null,
       { label: 'Copy', fn: () => clipOp('copy') }, { label: 'Duplicate', fn: () => clipOp('dup') },
-      { label: 'Split at playhead', fn: () => clipOp('split') },
+      { label: 'Split at playhead (Ctrl/Cmd+E)', fn: () => clipOp('split') },
+      { label: 'Split at loop edges', fn: () => splitAtLoop() },
       { label: 'Quantize…', fn: () => quantizeDialog() },
       c.type === 'midi' ? null : { label: 'Detect tempo (BPM)…', fn: () => clipTempoDialog(t, c, 'arr') },
       { label: 'Rename…', fn: () => { const n = prompt('Clip name', c.name); if (n) change('Rename clip', () => { c.name = n.slice(0, 64); renderArrange(); }); } },
@@ -1180,8 +1230,10 @@ function arrClip(t, c) {
       '-', { label: 'Delete', fn: () => clipOp('del') },
     ]);
   });
+  el.addEventListener('pointermove', (e) => { if (S.tool !== 'razor') return; const r = el.getBoundingClientRect(), p = snapPos(c.start + (e.clientX - r.left) / S.zoom, e); el.style.setProperty('--cut-x', (p - c.start) * S.zoom + 'px'); });
   el.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'touch' && !e.isPrimary) return;
+    if (S.tool === 'razor' && e.button === 0) { e.stopPropagation(); e.preventDefault(); const r = el.getBoundingClientRect(); S.sel = { kind: 'arr', trackId: t.id, clipId: c.id }; splitClipAt(t, c, snapPos(c.start + (e.clientX - r.left) / S.zoom, e)); return; }
     S.sel = { kind: 'arr', trackId: t.id, clipId: c.id };
     $$('.aclip.sel').forEach((x) => x.classList.remove('sel')); el.classList.add('sel'); renderToolsState();
     if (e.pointerType !== 'touch') startClipDrag({ kind: 'arr', t, c }, e, el); // touch: long-press picks the clip up (see touchDragOnHold)
@@ -1838,7 +1890,7 @@ function instrumentCard(t) {
     const off = () => { if (el.classList.contains('down')) { el.classList.remove('down'); play(note, false); } };
     el.addEventListener('pointerup', off); el.addEventListener('pointerleave', off); el.addEventListener('pointercancel', off);
   };
-  if (type === 'drums') for (const [note, name] of PAD_ORDER.slice(0, expanded ? 11 : 8)) { const p = h('button', { class: 'pad' }, name); bindPad(p, note); pads.append(p); }
+  if (type === 'drums') { /* 128-pad drum rack (ui/drumrack.js) */ }
   else {
     const base = S.kbdOct || 48;
     for (let i = 0; i < (expanded ? 25 : 13); i++) { const nn = base + i; const black = [1, 3, 6, 8, 10].includes(nn % 12); const k = h('button', { class: 'key' + (black ? ' black' : ''), title: noteName(nn) }); bindPad(k, nn); pads.append(k); }
@@ -1848,7 +1900,7 @@ function instrumentCard(t) {
       h('div', { class: 'oct' }, h('button', { title: 'Octave down', onclick: () => { S.kbdOct = Math.max(24, (S.kbdOct || 48) - 12); renderDevices(); } }, '−'), h('span', {}, noteName(S.kbdOct || 48)), h('button', { title: 'Octave up', onclick: () => { S.kbdOct = Math.min(84, (S.kbdOct || 48) + 12); renderDevices(); } }, '+')),
       wheel('Pitch bend (±2 semitones, springs back)', 'bend', -1, (v) => I.pitchBend(v), true), wheel('Mod wheel (vibrato)', 'mod', 0, (v) => I.modWheel(v), false), pads));
   }
-  if (type === 'drums') body.append(pads);
+  if (type === 'drums') body.append(h('div', { class: 'dr-wrap' }, drumRack.rack(t, false), drumRack.editor(t, false)));
   const knobs = h('div', { class: 'knobs' });
   for (const p of C.params) {
     if (!expanded && !p.easy) continue;
@@ -1898,6 +1950,17 @@ function midiFxCard(t, idx) {
   return card;
 }
 
+// Everything a sequencer step can p-lock on a track: instrument, audio effects, hosted plugin parameters.
+function paramCatalog(t) {
+  const out = [], add = (fx, dev, p, value) => out.push({ fx, key: String(p.key), label: `${dev}: ${p.label}`, min: p.min, max: p.max, def: p.def, type: p.type, options: p.options, value: value != null ? value : p.def,
+    fmt: (v) => (p.type === 'select' ? String(v) : fmtParam(p, v)) });
+  const native = S.pluginApi && S.pluginApi.isNative(t);
+  if (t.kind === 'midi' && t.inst && !native) { const C = INSTRUMENT_TYPES[t.inst.type], n = engine.tracks.get(t.id); if (C) C.params.forEach((p) => add('inst', C.label, p, n && n.inst && n.inst.values ? n.inst.values[p.key] : t.inst.values[p.key])); }
+  if (!native) (t.fx || []).forEach((d, i) => { const C = EFFECT_TYPES[d.type]; if (C && d.type !== 'rack') C.params.forEach((p) => add(i, C.label, p, d.values[p.key])); });
+  if (t.plugins && S.pluginApi) for (const e of t.plugins) { const r = S.pluginApi.rt.get(e.id); if (!r) continue;
+    S.pluginApi.visibleParams(e.id).slice(0, 256).forEach((p) => out.push({ fx: 'plugin:' + e.id, key: String(p.i), label: `${e.name}: ${p.name}`, min: 0, max: 1, def: p.def, value: e.values[p.i] ?? r.values[p.i] ?? p.def, fmt: (v) => (+v).toFixed(2) })); }
+  return out;
+}
 // ------------------------------------------------------------------ randomizer (every device: instruments, MIDI fx, audio fx, racks, plugins)
 // A target = one device: its parameter definitions, the object that stores its values + locks, and a setter.
 function instTarget(t) {
@@ -1921,6 +1984,7 @@ function scopeTargets(tid, scope) {
   if (scope === 'track' && t && t.kind === 'midi') { (t.midiFx || []).forEach((d, i) => out.push(midiFxTarget(t, i))); const it = instTarget(t); if (it) out.push(it); }
   if (t && t.plugins && S.pluginApi) t.plugins.forEach((e) => { if (scope === 'track' || !e.instrument) out.push(S.pluginApi.target(t, e.id)); });
   list.forEach((d, i) => out.push(...fxTargets(tid, list, i)));
+  if (scope === 'track' && t && t.seq && seqView) out.unshift(seqView.target(t));
   return out.filter(Boolean);
 }
 const randSettings = () => ({ amount: Math.max(0, Math.min(100, prefs.randAmount == null ? 50 : +prefs.randAmount)) / 100, mode: prefs.randMode === 'chaos' ? 'chaos' : 'musical' });
@@ -1930,12 +1994,12 @@ function randomizeTargets(targets, label) {
   if (!targets.length) { toast('Nothing to randomize here.'); return 0; }
   if (!gate('randomize', 'Randomizer')) return 0;
   const o = randSettings(), plan = [];
-  for (const T of targets) { const ch = randomizeValues(T.defs, T.values(), { ...o, locks: T.holder.locks, deviceType: T.type }); if (Object.keys(ch).length) plan.push([T, ch]); }
+  for (const T of targets) { const ch = T.plan ? T.plan(o) : randomizeValues(T.defs, T.values(), { ...o, locks: T.holder.locks, deviceType: T.type }); if (Object.keys(ch).length) plan.push([T, ch]); }
   const n = plan.reduce((a, [, ch]) => a + Object.keys(ch).length, 0);
   if (!n) { toast(o.amount ? 'Nothing changed: all parameters are locked.' : 'Amount is 0 %: nothing to change.'); return 0; }
   for (const [T, ch] of plan) if (T.prepare) T.prepare(Object.keys(ch)); // plugins: remember old values so undo can restore them
   change(label, () => { for (const [T, ch] of plan) { for (const [k, v] of Object.entries(ch)) T.set(k, v); if (T.commit) T.commit(); } });
-  renderDevices(); haptic(12);
+  renderDevices(); haptic(12); if (seqView && plan.some(([T]) => T.type === 'seq')) seqView.render();
   $$('#devices .device').forEach((c) => { c.classList.remove('rand-flash'); void c.offsetWidth; c.classList.add('rand-flash'); });
   toast(`${label}: ${n} parameter${n === 1 ? '' : 's'} changed${o.mode === 'musical' ? ' (musical)' : ''}. Undo: Ctrl/Cmd+Z`, 2600);
   return n;
@@ -2005,7 +2069,7 @@ function randPopover(anchor, getTargets, tid, go) {
 }
 
 // ------------------------------------------------------------------ device browser (desktop sidebar)
-const INST_HELP = { synth: 'Analog-style synth: 3 oscillators, filter, envelopes.', wavetable: 'Wavetable synth: morphing tables, unison, LFO.', drums: 'Drum kit: synthesized drums on pads (no samples).' };
+const INST_HELP = { synth: 'Analog-style synth: 3 oscillators, filter, envelopes.', wavetable: 'Wavetable synth: morphing tables, unison, LFO.', drums: 'Drum kit: 128 pads with built-in drum sounds; put your own samples on any pad.' };
 function browserSections() {
   const sup = pluginSupport();
   const plug = S.plugins || { list: [], status: '' };
@@ -2014,6 +2078,10 @@ function browserSections() {
     { id: 'midifx', label: 'MIDI Effects', icon: 'midi', color: '#EF4444', items: Object.entries(MIDI_FX_TYPES).map(([k, C]) => ({ kind: 'midifx', type: k, label: C.label, help: MIDI_FX_HELP[k], color: '#EF4444' })) },
     { id: 'fx', label: 'Audio Effects', icon: 'wave', color: '#A78BFA', items: Object.entries(EFFECT_TYPES).filter(([k]) => k !== 'rack').map(([k, C]) => ({ kind: 'fx', type: k, label: C.label, help: EFFECT_HELP[k] || C.label, locked: !allowed('fx.' + k), color: FX_COLORS[k] })) },
     { id: 'racks', label: 'Racks', icon: 'rack', color: '#9aa4ad', items: Object.keys(allRackPresets()).map((n) => ({ kind: 'rack', type: 'rack', name: n, label: n, search: 'rack', help: 'Rack: parallel chains with macro knobs.', locked: !allowed('fx.rack'), drag: { kind: 'rack', type: 'rack', name: n } })) },
+    { id: 'samples', label: 'My Samples', icon: 'drums', color: '#c4b5fd',
+      note: S.library.length ? '' : 'Your own sounds for the drum pads. Drop audio files (or a folder) on a pad, or press Add samples.',
+      actions: [{ label: 'Add samples', icon: 'folder', title: 'Load audio files onto the drum pads of the selected drum track (several files fill the next pads)', run: () => { const t = drumTarget(); if (t) drumRack.pick(t, drumRack.selOf(t), false); } }],
+      items: S.library.map((x) => ({ kind: 'sample', type: 'sample', id: x.id, label: x.name, badge: x.dur ? x.dur.toFixed(x.dur < 10 ? 2 : 1) + ' s' : '', search: 'sample drum pad', help: 'Your sample: drag it onto a drum pad, or double-click to put it on the selected pad.', drag: { kind: 'sample', id: x.id }, color: '#c4b5fd' })) },
     { id: 'plugins', label: 'Plugins', icon: 'plug', color: '#F87171', noteIcon: sup.desktop ? null : 'desktop', noteKind: sup.desktop ? '' : 'desktop-only',
       note: sup.desktop ? (plug.status || (plug.list.length ? '' : 'No plugins yet. Scan your plugin folders.')) : 'Desktop app only. ' + sup.reason,
       actions: sup.desktop && S.pluginApi ? [{ label: 'Scan', icon: 'refresh', title: 'Scan plugin folders (runs in a separate process, so a broken plugin cannot crash Auduio)', run: () => S.pluginApi.scan() }] : null,
@@ -2032,8 +2100,16 @@ function browserTargetAt(x, y) {
   return null;
 }
 // add a browser item to a track. trackId: null = selected track, 'new' = create a fitting track
+// the drum track that samples go to: the selected one, else the first, else a new one
+function drumTarget() {
+  const isD = (t) => t && t.kind === 'midi' && t.inst && t.inst.type === 'drums';
+  let t = track(S.selected); if (isD(t)) return t;
+  t = S.project.tracks.find(isD); if (t) { S.selected = t.id; renderAll(); return t; }
+  t = addTrack(null, 'midi', 'drums'); return t;
+}
 function addBrowserItem(it, trackId) {
   if (!S.project || !it) return;
+  if (it.kind === 'sample') { const sel = track(trackId && trackId !== 'new' ? trackId : S.selected); const t = sel && sel.kind === 'midi' && sel.inst && sel.inst.type === 'drums' ? sel : drumTarget(); if (t) { S.selected = t.id; drumRack.assignLibrary(t, it.padNote != null ? it.padNote : drumRack.selOf(t), it.id, it.label).then(() => renderDevices()); } return; }
   const want = it.kind === 'inst' || it.kind === 'midifx' || (it.kind === 'plugin' && it.instrument) ? 'midi' : 'any';
   let t = trackId === 'new' ? null : track(trackId || S.selected);
   const isMaster = (trackId || S.selected) === 'master' && trackId !== 'new';
@@ -2090,7 +2166,8 @@ function initPlugins() {
     onParamsChanged: (pid) => { const c = document.querySelector(`#devices .device[data-plugin="${pid}"]`); if (!c) return; const r = S.pluginApi.rt.get(pid);
       $$('.pl-row', c).forEach((row) => { const i = +row.dataset.i, v = r.values[i]; if (v != null && row.setValue && !row.contains(document.activeElement)) { row.setValue(v); const p = r.byIndex.get(i); const val = $('.pl-val', row); if (p && p.text && val) val.textContent = p.text; } }); } });
   S.plugins = S.pluginApi;
-  S.pluginApi.init().then(() => { if (S.project) renderDevices(); });
+  S.pluginApi.paramHook = (pid, i, v) => { if (!seqView) return false; const t = S.project && S.project.tracks.find((x) => (x.plugins || []).some((e) => e.id === pid)); return !!t && seqView.capture(t.id, 'plugin:' + pid, String(i), v); };
+  S.pluginApi.init().then((ok) => { if (S.project) renderDevices(); if (ok) engineMidi.attach(S.pluginApi.client).then(() => { if (seqView && S.project) renderAll(); }); });
 }
 let browser = null;
 function initBrowser() {
@@ -2358,7 +2435,7 @@ async function audioSettings() {
     h('p', {}, `Inputs detected: ${S.devices.inputs.length} `, needPerm ? h('button', { type: 'button', onclick: async () => { try { await engine.requestMicPermission(); closeDialog(); audioSettings(); renderAll(); } catch (e) { toast('Permission denied: ' + e.message); } } }, 'Allow microphone to list inputs') : ''),
     h('ul', { class: 'dev-list' }, S.devices.inputs.map((d) => h('li', {}, d.label || '(unnamed input)'))),
     h('label', {}, 'Extra record latency compensation (ms) ', lat),
-    h('p', {}, 'MIDI: ' + (MIDI.supported ? (MIDI.access ? `${MIDI.inputs().length} input(s): ${MIDI.inputs().map((i) => i.name).join(', ') || '—'}` : 'available (connects when you arm a MIDI track)') : MIDI.notice())),
+    h('p', {}, 'MIDI: ' + (MIDI.supported ? (MIDI.access ? `${MIDI.inputs().length} input(s): ${MIDI.inputs().map((i) => i.name).join(', ') || '—'}` : 'available (connects when you arm a MIDI track)') : MIDI.notice()) + (engineMidi.available ? ` MIDI out via the audio engine: ${engineMidi.ports.map((p) => p.name).join(', ') || 'no output ports found'}.` : '')),
     h('p', { class: 'hint' }, 'Choose input device and channel per track in the session mixer strip. Use headphones when monitoring.'));
   openDialog('Audio & MIDI settings', content);
 }
@@ -2379,12 +2456,14 @@ async function shareOrDownload(blob, name, type) {
   toast(`Exported ${name} (${(blob.size / 1048576).toFixed(1)} MB)`);
 }
 const baseName = () => (S.project.name || 'project').replace(/[^\w\- ]+/g, '_');
-async function exportProject() { await saveNow(); await shareOrDownload(exportProjectZip(S.project, engine.buffers), baseName() + '.auduio.zip', 'application/zip'); }
+async function loadAllPadSamples() { await Promise.all(S.project.tracks.flatMap((t) => Object.values((t.inst && t.inst.pads) || {}).map((p) => engine.ensureBuffer(p.bufferId)))); }
+async function exportProject() { await saveNow(); await loadAllPadSamples(); await shareOrDownload(exportProjectZip(S.project, engine.buffers), baseName() + '.auduio.zip', 'application/zip'); }
 async function exportEncrypted() {
   if (!cryptoAvailable()) return toast('Encryption needs a secure (https) context.');
   const pw = await askPassword('Export encrypted', true); if (pw == null) return;
   if (pw.length < 6) return toast('Use at least 6 characters.');
   await saveNow(); toast('Encrypting…', 1200);
+  await loadAllPadSamples();
   const bytes = new Uint8Array(await exportProjectZip(S.project, engine.buffers).arrayBuffer());
   const enc = await encryptBytes(bytes, pw);
   await shareOrDownload(new Blob([enc], { type: 'application/octet-stream' }), baseName() + '.auduio.enc', 'application/octet-stream');
@@ -2443,7 +2522,14 @@ function toggleHelp() {
   helpMode = !helpMode; document.body.classList.toggle('helpmode', helpMode); $('#btnHelp').classList.toggle('on', helpMode);
   $$('.help-bar').forEach((e) => e.remove());
   if (helpMode) document.body.append(h('div', { class: 'help-bar', role: 'status' }, h('span', {}, 'Help mode: tap anything to see what it does.'),
-    h('button', { class: 'small primary', onclick: () => { toggleHelp(); startTutorial(); } }, 'Replay tutorial'), h('button', { class: 'small', onclick: () => toggleHelp() }, 'Exit help')));
+    h('button', { class: 'small primary', onclick: () => { toggleHelp(); startTutorial(); } }, 'Replay tutorial'), h('button', { class: 'small', onclick: () => openManual() }, 'User manual'), h('button', { class: 'small', onclick: () => toggleHelp() }, 'Exit help')));
+}
+// the user manual ships with the app (same origin, works offline in the installed app)
+const MANUAL_URL = 'manual/Auduio-Manual.pdf';
+function openManual() {
+  // app webviews (Tauri) do not open new windows, so save the PDF there instead; browsers open it in a new tab
+  if (window.__TAURI__) { const a = h('a', { href: MANUAL_URL, download: 'Auduio-Manual.pdf' }); document.body.append(a); a.click(); a.remove(); toast('Manual saved to your Downloads folder'); return; }
+  window.open(MANUAL_URL, '_blank', 'noopener');
 }
 document.addEventListener('click', (e) => {
   if (!helpMode || e.target.closest('#btnHelp, .help-bar')) return;
@@ -2487,10 +2573,11 @@ function menuActions() {
     ['Preferences…', prefsDialog],
     ['Simple phone layout', () => { prefs.phoneMode = 'on'; savePrefs(); phone.setActive(true); }],
     ['Tutorial', () => startTutorial()],
+    ['User manual (PDF)', openManual],
     ['-'],
     ['Install app', installApp],
-    ['About', () => openDialog('About Auduio', h('div', {}, h('p', {}, 'Auduio v0.4.0 (formerly WebDAW) — a browser DAW built on the Web Audio API. Works offline once loaded; makes no network requests besides loading itself. Projects are saved in this browser (IndexedDB); use Export/Import to move them.'),
-      h('p', { class: 'hint' }, 'Shortcuts: Space play/stop · R record · M metronome · Tab switch view · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z or Ctrl+Y redo · Ctrl/Cmd+C/V/D copy/paste/duplicate · Delete remove clip · S split.')))],
+    ['About', () => openDialog('About Auduio', h('div', {}, h('p', {}, 'Auduio v0.5.0 (formerly WebDAW) — a DAW built on the Web Audio API, now with a step sequencer, a 128-pad drum rack with your own samples, clip cutting and hardware MIDI out. The desktop app also hosts VST3 and CLAP plugins. Works offline once loaded; makes no network requests besides loading itself. Projects are saved in this browser (IndexedDB); use Export/Import to move them. Press Help, then User manual, for the full guide.'),
+      h('p', { class: 'hint' }, 'Shortcuts: Space play/stop · R record · M metronome · Tab switch view · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z or Ctrl+Y redo · Ctrl/Cmd+C/V/D copy/paste/duplicate · Delete remove clip · Ctrl/Cmd+E or S split at playhead · X cut tool · B browser.')))],
   ];
   const m = $('#menu'); m.innerHTML = '';
   for (const [label, fn] of items) m.append(label === '-' ? h('hr') : h('button', { onclick: () => { closeMenus(); fn(); } }, label));
@@ -2508,8 +2595,10 @@ function renderAll() {
   syncBottomToSelection();
   $('#sessionView').hidden = S.view !== 'session';
   $('#arrangeView').hidden = S.view !== 'arrange';
+  $('#seqView').hidden = S.view !== 'seq';
   $$('.views button').forEach((b) => b.classList.toggle('on', b.dataset.view === S.view));
   renderSession(); renderArrange(); renderDevices(); updateTransportUI(); updateKeyButton();
+  if (S.view === 'seq') seqView.render();
   if (typeof phone !== 'undefined' && phone.active) phone.render();
   syncMonitor();
 }
@@ -2585,6 +2674,7 @@ function frame(ts) {
   drawMeter($('#masterMeterTop'), 'master');
   if (ts - lastScope > 33) { lastScope = ts; drawMasterScope(); drawLiveRecording(); }
   phone.frame(ts);
+  seqView.frame(ts);
   if (S.bottom === 'clip' && (engine.playing || engine.audition) && S.clipView && S.clipView.draw && ts - lastClipDraw > 66) { lastClipDraw = ts; S.clipView.draw(); }
   // input signal LEDs
   $$('.sig[data-sig]').forEach((el) => {
@@ -2645,6 +2735,7 @@ function bindUI() {
       else if (k === 'v') { e.preventDefault(); clipOp('paste'); }
       else if (k === 'd') { e.preventDefault(); clipOp('dup'); }
       else if (k === 'l') { e.preventDefault(); loopToSelection(); }
+      else if (k === 'e') { e.preventDefault(); clipOp('split'); }
       return;
     }
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
@@ -2652,8 +2743,10 @@ function bindUI() {
     else if (k === 'm') $('#btnMetro').click();
     else if (k === 't') tapTempo();
     else if (k === 's') clipOp('split');
+    else if (k === 'x') setTool('razor');
+    else if (e.key === 'Escape' && S.tool) setTool(S.tool);
     else if (k === 'b' && browser && !phone.active) browser.toggle();
-    else if (e.key === 'Tab') { e.preventDefault(); S.view = S.view === 'session' ? 'arrange' : 'session'; renderAll(); }
+    else if (e.key === 'Tab') { e.preventDefault(); S.view = S.view === 'session' ? 'arrange' : S.view === 'arrange' ? 'seq' : 'session'; renderAll(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') { if (S.sel) { e.preventDefault(); clipOp('del'); } }
     else if (e.key === 'Escape') { closeMenus(); if (helpMode) toggleHelp(); if (S.carry) { S.carry = null; renderCarryBar(); } engine.stopAudition(); }
   });
@@ -2692,6 +2785,7 @@ async function start() {
   try { await engine.init(); await engine.resume(); }
   catch (e) { $('#startMsg').textContent = 'Audio could not start: ' + e.message; $('#startBtn').disabled = false; return; }
   engine.latencyOffsetMs = +localStorage.getItem('latOffset') || 0;
+  engine.lazyLoader = (id) => DB.loadBuffer(id, engine.ctx); // drum-pad samples load on first use
   initPlugins();
   S.devices = await engine.listDevices().catch(() => ({ inputs: [], outputs: [] }));
   let loaded = null;
@@ -2700,6 +2794,7 @@ async function start() {
     try { const v = validateProject(loaded.project); loaded.project = v.project; } catch (e) { console.warn('stored project failed validation, starting new', e); loaded = null; }
   }
   if (loaded) await loadProjectData(loaded.project, loaded.buffers); else await newProjectFlow(2);
+  library.load();
   $('#startOverlay').remove();
   initBrowser();
   phone.setActive(wantsPhone());
@@ -2710,15 +2805,61 @@ async function start() {
 
 // ------------------------------------------------------------------ phone mode
 async function saveAndShare() { await saveNow(); toast('Saved in this browser', 1200); await exportProject(); }
-const phone = createPhone({
+// ------------------------------------------------------------------ drum rack (128 pads, user samples) + "My Samples"
+S.library = [];
+const library = {
+  list: () => S.library,
+  async load() { try { S.library = (await DB.getLibrary()).filter((x) => x && typeof x.id === 'string' && /^[A-Za-z0-9_-]{1,48}$/.test(x.id)).map((x) => ({ id: x.id, name: String(x.name || 'Sample').slice(0, 40), dur: +x.dur || 0 })); } catch (e) { S.library = []; } if (browser) browser.render(); },
+  add(entries, bufs) {
+    const have = new Set(S.library.map((x) => x.id));
+    for (const e of entries) if (!have.has(e.id)) S.library.unshift(e);
+    S.library = S.library.slice(0, 512);
+    // the audio is stored right away so the sample stays available in other projects
+    Promise.all((bufs || []).map(([id, b]) => DB.putBuffer(id, b))).then(() => DB.setLibrary(S.library)).catch((e) => console.warn('My Samples: could not store', e));
+    if (browser) browser.render();
+  },
+  remove(id) { S.library = S.library.filter((x) => x.id !== id); DB.setLibrary(S.library).catch(() => {}); if (browser) browser.render(); },
+};
+function usedNotes(t) {
+  const used = new Set();
+  for (const c of [...(t.slots || []), ...(t.arrangement || [])]) if (c && c.type === 'midi') (c.notes || []).forEach((x) => used.add(x.n));
+  if (t.seq) (t.seq.patterns || []).forEach((p) => (p.steps || []).slice(0, p.len).forEach((st) => st && st.on && (st.n || []).forEach((x) => used.add(x))));
+  return used;
+}
+// big-button sheet (phone) with the same look as the phone clip sheet
+function actionSheet(title, items) {
+  const host = $('#phone') || document.body;
+  const sheet = h('div', { class: 'ph-sheet', role: 'dialog', 'aria-label': title });
+  const close = () => sheet.remove();
+  // opened by a long-press: the click from lifting that finger must not hit the sheet, so only a new press counts
+  let armed = false; sheet.addEventListener('pointerdown', () => { armed = true; }, true);
+  const tap = (fn) => (e) => { if (!armed) { e.preventDefault(); return; } fn(); };
+  sheet.addEventListener('click', (e) => { if (armed && e.target === sheet) close(); });
+  sheet.append(h('div', { class: 'ph-sheet-card' }, h('h3', { class: 'ph-h' }, title),
+    h('div', { class: 'ph-col' }, items.map((it) => h('button', { class: 'ph-big', onclick: tap(() => { close(); it.fn(); }) }, h('span', { class: 'b1' }, it.label)))),
+    h('button', { class: 'ph-big', onclick: tap(close) }, h('span', { class: 'b1' }, 'Cancel'))));
+  host.append(sheet); haptic(15);
+}
+drumRack = createDrumRack({ S, engine, change, uid, noteEvent: (t, n, v, on) => noteEvent(t, n, v, on), contextMenu: (x, y, items) => contextMenu(x, y, items),
+  sheet: (title, items) => actionSheet(title, items), usedNotes, library, markChanged: () => { if (browser) browser.render(); },
+  refreshSeq: () => { if (S.view === 'seq' || (phone && phone.active && phone.tab === 'seq')) seqView.render(); } });
+window.__daw.drumRack = drumRack; window.__daw.library = library;
+seqView = createSeqView({ drumRack, S, engine, change, markDirty, track, renderAll: () => renderAll(), renderDevices: () => renderDevices(), addTrack: (n, k, i) => addTrack(n, k, i),
+  select: (id) => { S.selected = id; syncMonitor(); }, randButtons, loopInfo, toggleLoop, paramCatalog, SCALES,
+  phoneActive: () => phone.active, phoneTab: () => phone.tab, phoneRender: () => phone.render() });
+seqView.mount($('#seqView'));
+engine.seq.midiOut = createMidiOut(() => engine.ctx);
+engine.seq.onSwitch = () => { markDirty(); };
+engine.pluginLock = (t, pid, i, v, at, dur) => S.pluginApi && S.pluginApi.lockParam && S.pluginApi.lockParam(pid, i, v, at, dur);
+const phone = createPhone({ seqView, drumRack,
   S, engine, history, track, change, markDirty, renderAll, renderDevices, togglePlay, toggleRecord, toggleAutoRecord, toggleArm, addTrack, renameTrack,
   autoMixDialog, gate, lockBadge, EFFECT_TYPES, EASY_PARAMS, EFFECT_HELP, setParam, fmtParam, fmtPos, undo, redo, tapTempo, tempoPopover, prefsDialog,
-  projectsDialog, saveAndShare, startTutorial, toggleHelp, updateTransportUI, liveTakes, livePeaksFor, placeClip, snapPos, startAudition, syncMonitor, icon,
-  toggleLoop, loopInfo, setLoopBars,
+  projectsDialog, saveAndShare, startTutorial, openManual, toggleHelp, updateTransportUI, liveTakes, livePeaksFor, placeClip, snapPos, startAudition, syncMonitor, icon,
+  toggleLoop, loopInfo, setLoopBars, splitClipAt, splitAtLoop, clipOp,
 });
 function applyPhoneMode() { const on = wantsPhone(); if (on !== phone.active) { phone.setActive(on); if (!on) renderAll(); } }
 addEventListener('resize', () => { if (S.project && (prefs.phoneMode || 'auto') === 'auto') applyPhoneMode(); });
-window.__daw.phone = phone; window.__daw.tutorial = tutorial;
+window.__daw.phone = phone; window.__daw.tutorial = tutorial; window.__daw.seq = seqView;
 
 bindUI();
 ['pointerdown', 'touchend', 'keydown'].forEach((ev) => document.addEventListener(ev, () => { if (engine.ctx && engine.ctx.state !== 'running') engine.resume(); }, { passive: true }));

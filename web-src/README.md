@@ -1,4 +1,4 @@
-# Auduio (v0.4.0)
+# Auduio (v0.5.0)
 
 Auduio was called WebDAW until v0.3.1. Saved projects and settings carry over automatically, and old `.webdaw.zip` files still import; new exports are `.auduio.zip`.
 
@@ -21,6 +21,11 @@ node tests/e2e-rename.mjs      # v0.3.1 rename to Auduio: visible name, .auduio.
 node tests/randomize-unit.mjs  # v0.4 randomizer logic (musical/chaos, locks, safe levels), Node only
 node tests/e2e-v04.mjs         # v0.4 browser sidebar, MIDI effects, randomizer on every device (screenshots -> shots/)
 node tests/e2e-plugins.mjs     # v0.4 plugin hosting: this UI driving the real native engine + Surge XT (skips if not built)
+node tests/seq-unit.mjs        # v0.5 step sequencer logic (Node only); also clipedit-unit.mjs, drumrack-unit.mjs
+node tests/e2e-seq.mjs         # v0.5 step sequencer + clip cutting in a real browser
+node tests/e2e-drumrack.mjs    # v0.5 128-pad drum rack with user samples
+node tests/e2e-manual.mjs      # v0.5 user manual (PDF) and the Help link
+node tests/e2e-midiout.mjs     # v0.5 MIDI out through the native engine (desktop webviews without Web MIDI)
 ```
 The mic needs HTTPS or localhost. GitHub Pages serves over HTTPS.
 
@@ -49,6 +54,13 @@ Publish the contents of `dist/`. Every path is relative, so the app works from a
 - `src/js/ui/tutorial.js`: interactive first-run tutorial
 - `src/js/midi.js`, `ui/pianoroll.js`, `history.js`, `security.js`, `validate.js`: Web MIDI, piano roll, undo/redo, PIN/encryption, import validation
 
+## What's new in v0.5
+- **Step sequencer** ("Seq" view): up to 128 steps per pattern, ratchets, chance, parameter locks, polyrhythms and polymeters, pattern chains, randomize with locks, and MIDI out to external gear.
+- **128-pad Drum Kit** with your own samples.
+- **Clip cutting** in the arrangement (split at the playhead, cut tool).
+- **User manual** (27-page PDF, `docs/Auduio-Manual.pdf`), opened from Help > User manual.
+- **Desktop app:** the Windows and Linux builds use the new JUCE-free Rust audio engine (VST3 + CLAP). macOS keeps the JUCE engine (VST3 + AU). On macOS and Linux, where the app's webview has no Web MIDI, MIDI out goes through the engine.
+
 ## What's new in v0.4
 - **Browser sidebar** (desktop layouts; press B or the arrow to collapse it to an icon rail). It lists Instruments, MIDI Effects, Audio Effects, Racks and Plugins, with search. Drag an item onto a track, double-click it, or use its + button. Items dropped on empty space create a fitting new track.
 - **MIDI effects** in front of the instrument on MIDI tracks: Arpeggiator (synced to the transport, also works while stopped), Chord, Scale (follows the song key), Note Length, Velocity and Random.
@@ -61,7 +73,7 @@ Publish the contents of `dist/`. Every path is relative, so the app works from a
   - Loads VST3 plugins (AU on macOS) through a native audio engine sidecar, and scans plugin folders in separate processes.
   - The plugin's own window opens from its device card. The card also has a parameter list with search, randomize, macros, MIDI learn and automation recording.
   - The web app, Android and iOS show the Plugins section as desktop-only.
-  - See `apps/docs/PLUGIN-HOSTING.md`.
+  - See `../daw-apps/docs/PLUGIN-HOSTING.md` (apps branch: `apps/docs/PLUGIN-HOSTING.md`).
 
 ## What's new in v0.3.1
 - Renamed to Auduio. The visible name, manifest, export extension (`.auduio.zip`, `.auduio.enc`) and the desktop and mobile app ids all changed. Projects saved in the old `webdaw` IndexedDB database are copied into the new `auduio` one the first time you open it, and the old database is left untouched. Settings saved under the old `webdaw.*` keys are copied too. The project file format id stays `webdaw-project`, so older versions can still open new files; `auduio-project` is also accepted.

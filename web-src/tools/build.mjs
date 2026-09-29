@@ -11,7 +11,8 @@ const files = [];
 const hash = crypto.createHash('sha256');
 for (const f of files.sort()) { fs.mkdirSync(path.dirname(path.join(dist, f)), { recursive: true }); fs.copyFileSync(path.join(src, f), path.join(dist, f)); if (f !== 'sw.js') hash.update(f).update(fs.readFileSync(path.join(src, f))); }
 const version = hash.digest('hex').slice(0, 10);
-const assets = ['./', ...files.filter((f) => f !== 'sw.js').map((f) => './' + f.split(path.sep).join('/'))];
+// the manual PDF is large: not precached on install; the service worker caches it the first time it is opened
+const assets = ['./', ...files.filter((f) => f !== 'sw.js' && !f.endsWith('.pdf')).map((f) => './' + f.split(path.sep).join('/'))];
 let sw = fs.readFileSync(path.join(dist, 'sw.js'), 'utf8');
 sw = sw.replace(/const VERSION = .*\/\*VERSION\*\//, `const VERSION = '${version}';`).replace(/const ASSETS = .*\/\*ASSETS\*\//, `const ASSETS = ${JSON.stringify(assets)};`);
 fs.writeFileSync(path.join(dist, 'sw.js'), sw);

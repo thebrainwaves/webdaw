@@ -33,7 +33,7 @@
     <div id="posDisplay" class="pos" title="Position: bar.beat.sixteenth">1.1.1</div>
   </div>
   <div class="hist"><button id="btnUndo" class="btn-undo" title="Undo (Ctrl/Cmd+Z)" aria-label="Undo" disabled><svg class="ico ico-undo" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button><button id="btnRedo" class="btn-redo" title="Redo (Ctrl/Cmd+Shift+Z)" aria-label="Redo" disabled><svg class="ico ico-redo" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button></div>
-  <div class="views"><button data-view="session" class="on" title="Session view: clip launcher and mixer">Session</button><button data-view="arrange" title="Arrangement view: timeline">Arrange</button></div>
+  <div class="views"><button data-view="session" class="on" title="Session view: clip launcher and mixer">Session</button><button data-view="arrange" title="Arrangement view: timeline">Arrange</button><button data-view="seq" title="Step sequencer: patterns, steps, chains (Squarp-style)">Seq</button></div>
   <button id="btnAutoMix" class="automix" title="Auto-Mix setup: tell the app what each track is (or let it suggest), then it sets up EQ, compression and effects">Auto-Mix</button>
   <button id="btnEasy" class="tog" title="Easy Mode: fewer controls, bigger labels">Easy</button>
   <button id="btnHelp" class="tog" title="Help mode: tap any control to see what it does" aria-label="Help">?</button>
@@ -47,6 +47,7 @@
 <main id="main">
   <section id="sessionView" class="view"></section>
   <section id="arrangeView" class="view" hidden></section>
+  <section id="seqView" class="view" hidden></section>
 </main>
 <section id="devicePanel">
   <div id="devHead" class="dev-head"></div>

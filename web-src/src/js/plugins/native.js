@@ -141,6 +141,7 @@ export function createPluginApi(deps) {
   api.setParam = (pid, i, v, opts = {}) => {
     const f = trackOf(pid), r = rt.get(pid); if (!f || !r) return;
     v = Math.max(0, Math.min(1, +v)); i = +i;
+    if (opts.history !== false && api.paramHook && api.paramHook(pid, i, v)) return; // sequencer P-Lock mode
     if (f.e.values[i] == null && r.values[i] != null) f.e.values[i] = r.values[i]; // so undo can go back to it
     if (opts.history !== false) history.push('Change ' + ((r.byIndex.get(i) || {}).name || 'parameter'), `pl:${pid}:${i}`);
     f.e.values[i] = v; r.values[i] = v; r.touched.set(i, now());
@@ -148,6 +149,26 @@ export function createPluginApi(deps) {
     recordAuto(f.e, i, v);
     stateSoon(pid); if (opts.history !== false) markDirty();
   };
+  // Sequencer p-lock: set parameter i to v at AudioContext time `at` and back to the track's own value after
+  // `dur` seconds, sample-timed in the engine. Never stored in the project; the engine's echo is ignored.
+  const lockEcho = new Map();
+  api.lockParam = (pid, i, v, at, dur) => {
+    const r = rt.get(pid), f = trackOf(pid); if (!r || !r.instanceId || !f) return false;
+    i = +i; v = Math.max(0, Math.min(1, +v)); if (!Number.isInteger(i) || i < 0 || i >= 4096) return false;
+    const base = f.e.values[i] ?? r.values[i]; if (base == null) return false;
+    const t0 = client.toEngineTime(at, engine.ctx), t1 = client.toEngineTime(at + Math.max(0.02, dur), engine.ctx);
+    const L = lockEcho.get(pid) || new Map(); lockEcho.set(pid, L); L.set(i, { v, until: performance.now() + Math.max(0, (at - engine.ctx.currentTime + dur) * 1000) + 1500 });
+    if (t0 == null) { // no engine clock: approximate with timers
+      const ms = (x) => Math.max(0, (x - engine.ctx.currentTime) * 1000);
+      setTimeout(() => client.post('param.set', { instanceId: r.instanceId, index: i, value: v }), ms(at));
+      setTimeout(() => client.post('param.set', { instanceId: r.instanceId, index: i, value: f.e.values[i] ?? r.values[i] ?? base }), ms(at + dur));
+    } else {
+      client.post('param.set', { instanceId: r.instanceId, index: i, value: v, t: t0 });
+      client.post('param.set', { instanceId: r.instanceId, index: i, value: base, t: t1 });
+    }
+    return true;
+  };
+  const isLockEcho = (pid, i, v) => { const L = lockEcho.get(pid), x = L && L.get(i); if (!x) return false; if (performance.now() > x.until) { L.delete(i); return false; } return Math.abs(x.v - v) < 1e-3; };
   function onParams(m) {
     let pid = null; for (const [k, r] of rt) if (r.instanceId === m.instanceId) pid = k;
     if (!pid) return; const r = rt.get(pid), f = trackOf(pid); if (!f) return;
@@ -155,6 +176,7 @@ export function createPluginApi(deps) {
     for (const [i, v, text] of m.changes || []) {
       const p = r.byIndex.get(i); if (p && text != null) p.text = text;
       if (Math.abs((r.values[i] ?? -1) - v) < 1e-4) { if (p) p.value = v; continue; } // echo of our own change
+      if (isLockEcho(pid, i, v)) continue; // sequencer p-lock, not a user edit
       if (!changed) history.push('Plugin edit: ' + f.e.name, 'ple:' + pid);
       changed = true;
       if (f.e.values[i] == null && r.values[i] != null) f.e.values[i] = r.values[i];

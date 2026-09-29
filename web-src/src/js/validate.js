@@ -6,6 +6,8 @@ import { INSTRUMENT_TYPES } from './audio/instruments.js';
 import { INSTRUMENTS, ROLES } from './audio/presets.js';
 import { SCALES } from './audio/pitchdsp.js';
 import { MIDI_FX_TYPES } from './audio/midifx.js';
+import { sanitizeSeq } from './audio/sequencer.js';
+import { sanitizePads, padBufferIds } from './audio/drumrack.js';
 
 export const LIMITS = { tracks: 128, fxPerTrack: 16, clipsPerTrack: 5000, notesPerClip: 20000, scenes: 64, midiMap: 256, midiFxPerTrack: 8, pluginsPerTrack: 8, pluginParams: 4096, pluginState: 8 * 1024 * 1024, pluginAutoPoints: 20000 };
 const ID_RE = /^[A-Za-z0-9_-]{1,48}$/;
@@ -156,8 +158,10 @@ export function validateProject(raw) {
       const it = t.inst && INSTRUMENT_TYPES[t.inst.type] ? t.inst.type : 'synth';
       nt.inst = { type: it, values: params(INSTRUMENT_TYPES[it].params, t.inst && t.inst.values) };
       const L = locks(t.inst && t.inst.locks, INSTRUMENT_TYPES[it].params); if (L) nt.inst.locks = L;
+      if (it === 'drums' && t.inst.pads) { const pads = sanitizePads(t.inst.pads); if (Object.keys(pads).length) { nt.inst.pads = pads; padBufferIds(pads).forEach((b) => bufferIds.add(b)); } }
       nt.midiFx = midiFxList(t.midiFx);
       const pl = pluginList(t.plugins); if (pl.length) nt.plugins = pl;
+      if (t.seq != null) { const sq = sanitizeSeq(t.seq); if (sq) nt.seq = sq; }
     }
     p.tracks.push(nt);
   }

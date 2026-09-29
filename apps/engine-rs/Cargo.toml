@@ -1,0 +1,39 @@
+[package]
+name = "auduio-engine"
+version = "0.5.0"
+edition = "2021"
+license = "MIT"
+description = "Auduio native plugin engine (VST3 + CLAP host), JUCE-free"
+publish = false
+
+[[bin]]
+name = "auduio-engine"
+path = "src/main.rs"
+
+[dependencies]
+vst3 = "0.3"
+clap-sys = "0.5"
+cpal = "0.18"
+serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.23"
+rtrb = "0.4"
+libloading = "0.9"
+midir = "0.11.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.14", features = ["allow-unsafe-code"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_Security", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_IO"] }
+
+[profile.release]
+opt-level = 3
+debug = false
+panic = "unwind"
+
+[features]
+# counts Rust heap allocations inside the live audio callback (test builds only)
+rt-alloc-check = []

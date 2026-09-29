@@ -15,7 +15,7 @@ const PLAIN_PARAM = { threshold: 'How much', ratio: 'Strength', makeup: 'Loudnes
   sync: 'Timing', drive: 'Grit amount', level: 'Output', voicing: 'Style', lowGain: 'Bass', m1Gain: 'Low mids', m2Gain: 'High mids', highGain: 'Treble',
   speed: 'Snap speed', humanize: 'Natural feel', depth: 'Depth', rate: 'Speed', gain: 'Gain', ceiling: 'Max level', input: 'Input', channel: 'Channel',
   bass: 'Bass', mid: 'Mids', treble: 'Treble', master: 'Volume', macro1: 'Macro 1', macro2: 'Macro 2', macro3: 'Macro 3', macro4: 'Macro 4' };
-const TABS = [['record', 'record', 'Record'], ['tracks', 'tracks', 'Tracks'], ['mix', 'mixer', 'Mix'], ['effects', 'fx', 'Effects'], ['more', 'more', 'More']];
+const TABS = [['record', 'record', 'Record'], ['tracks', 'tracks', 'Tracks'], ['seq', 'seq', 'Steps'], ['mix', 'mixer', 'Mix'], ['effects', 'fx', 'Effects'], ['more', 'more', 'More']];
 
 export function wantsPhone() {
   const mode = prefs.phoneMode || 'auto';
@@ -136,17 +136,35 @@ export function createPhone(api) {
     const strip = h('div', { class: 'ph-clips ph-noswipe', role: 'list', 'aria-label': 'Clips on this track' });
     if (!clips.length) strip.append(h('span', { class: 'ph-hint' }, 'No clips on this track yet.'));
     for (const c of clips) {
-      const chip = h('button', { class: 'ph-clip' + (carry && carry.c === c ? ' carried' : '') + (engine.audition && engine.audition.c === c ? ' auditioning' : ''), role: 'listitem', style: { '--c': t.color }, title: 'Tap to preview, long-press to pick up and move', 'aria-label': `Clip ${c.name || ''} at ${api.fmtPos(c.start)} — tap to preview, long-press to move` },
+      const chip = h('button', { class: 'ph-clip' + (carry && carry.c === c ? ' carried' : '') + (engine.audition && engine.audition.c === c ? ' auditioning' : ''), role: 'listitem', style: { '--c': t.color }, title: 'Tap to preview, long-press for Split / Move / Delete', 'aria-label': `Clip ${c.name || ''} at ${api.fmtPos(c.start)} — tap to preview, long-press for split, move and delete` },
         h('span', { class: 'b1' }, c.name || 'Clip'), h('span', { class: 'b2' }, api.fmtPos(c.start)));
       let timer = null;
-      const pick = () => { carry = { t, c }; quietUntil = Date.now() + 1500; window.addEventListener('pointerup', () => setTimeout(() => { quietUntil = 0; }, 60), { once: true, capture: true }); haptic(20); render(); };
-      chip.addEventListener('pointerdown', () => { clearTimeout(timer); timer = setTimeout(pick, 480); });
+      const pick = (quiet = true) => { carry = { t, c }; if (quiet) { quietUntil = Date.now() + 1500; window.addEventListener('pointerup', () => setTimeout(() => { quietUntil = 0; }, 60), { once: true, capture: true }); } else quietUntil = 0; haptic(20); render(); };
+      const menu = () => { clearTimeout(timer); if (root.querySelector('.ph-sheet')) return; quietUntil = Date.now() + 1500; window.addEventListener('pointerup', () => setTimeout(() => { quietUntil = 0; }, 60), { once: true, capture: true }); haptic(20); clipSheet(t, c, pick); };
+      chip.addEventListener('pointerdown', () => { clearTimeout(timer); timer = setTimeout(menu, 480); });
       ['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) => chip.addEventListener(ev, () => clearTimeout(timer)));
-      chip.addEventListener('contextmenu', (e) => { e.preventDefault(); pick(); });
+      chip.addEventListener('contextmenu', (e) => { e.preventDefault(); menu(); });
       chip.addEventListener('click', () => { if (engine.audition && engine.audition.c === c) engine.stopAudition(); else { engine.resume(); api.startAudition(t, c, { key: 'arr:' + c.id }); } render(); });
       strip.append(chip);
     }
     return strip;
+  }
+  // long-press on a clip: split / move / delete sheet (big buttons)
+  function clipSheet(t, c, pick) {
+    const p = engine.position(), inside = p > c.start + 1e-3 && p < c.start + c.duration - 1e-3;
+    const close = () => sheet.remove();
+    const act = (fn) => () => { close(); fn(); };
+    const sheet = h('div', { class: 'ph-sheet', role: 'dialog', 'aria-label': 'Clip actions' });
+    sheet.addEventListener('click', (e) => { if (e.target === sheet) close(); });
+    sheet.append(h('div', { class: 'ph-sheet-card' }, h('h3', { class: 'ph-h' }, c.name || 'Clip'),
+      h('div', { class: 'ph-col' },
+        big([icon('cut'), ' Split here'], inside ? `Cut the clip at the playhead (${api.fmtPos(p)})` : 'Move the playhead over this clip first (or use Split in half)', act(() => { if (inside) api.splitClipAt(t, c, p); else toast('Move the playhead over the clip first.', 2200); }), 'accent ph-split' + (inside ? '' : ' dim')),
+        big('Split in half', 'Cut the clip into two equal parts', act(() => api.splitClipAt(t, c, c.start + c.duration / 2)), 'ph-half'),
+        big('Split at loop edges', 'Cut every clip where the loop starts and ends', act(() => api.splitAtLoop())),
+        big([icon('move'), ' Move'], 'Pick it up, then choose where it goes', act(() => pick(false)), 'ph-move'),
+        big('Delete', 'Remove this clip (Undo brings it back)', act(() => { S.sel = { kind: 'arr', trackId: t.id, clipId: c.id }; api.clipOp('del'); render(); }), 'red')),
+      big('Cancel', null, close)));
+    root.append(sheet);
   }
   function carryBar(t) {
     if (!carry) return null;
@@ -159,7 +177,8 @@ export function createPhone(api) {
         big('Cancel', null, () => { carry = null; render(); })));
   }
   function tracksScreen(t) {
-    return [pager(t), carryBar(t), t ? waveBox(t) : null, clipStrip(t),
+    const drums = t && api.drumRack && api.drumRack.isDrumTrack(t);
+    return [pager(t), carryBar(t), drums ? h('div', { class: 'ph-card ph-noswipe ph-drums' }, api.drumRack.rack(t, true), api.drumRack.editor(t, true)) : t ? waveBox(t) : null, clipStrip(t),
       t ? h('div', { class: 'ph-row' },
         big(t.arm ? 'Mic: on' : 'Mic: off', t.kind === 'midi' ? 'Listen to MIDI keyboard (arm)' : 'Hear the microphone (arm)', async () => { await api.toggleArm(t); render(); }, (t.arm ? 'on red' : '') + ' ph-arm'),
         big(t.mute ? 'Muted' : 'Mute', 'Silence this track', () => { api.change('Mute', () => { t.mute = !t.mute; engine.syncTrack(t); }); api.renderAll(); }, t.mute ? 'on' : ''),
@@ -226,8 +245,18 @@ export function createPhone(api) {
       h('div', { class: 'ph-col' },
         big([icon('book'), ' Tutorial'], 'Show the 6-step introduction again', () => api.startTutorial()),
         big([icon('help'), ' Help mode'], 'Tap anything to see what it does', () => api.toggleHelp()),
+        big([icon('book'), ' User manual'], 'The full guide, with pictures (PDF)', () => api.openManual(), 'ph-manual'),
         big([icon('settings'), ' Settings'], 'Bigger text, contrast, haptics, tier…', () => api.prefsDialog()),
         big([icon('desktop'), ' Show full layout'], 'All controls (more complex)', () => { prefs.phoneMode = 'off'; savePrefs(); setActive(false); api.renderAll(); toast('Full layout. Switch back in Menu → Simple phone layout.', 3000); }, 'ph-full'))];
+  }
+  // Steps tab: the step sequencer for the focused track (MIDI tracks only), laid out 8 steps per row
+  function seqScreen(t) {
+    if (!t || t.kind !== 'midi') {
+      const L = tracksList().filter((x) => x.kind === 'midi');
+      return [pager(t), h('div', { class: 'ph-card' }, h('p', { class: 'ph-hint' }, 'The step sequencer works on instrument (MIDI) tracks.'),
+        L.length ? big('Go to ' + L[0].name, 'Instrument track', () => { S.selected = L[0].id; render(); }, 'accent') : big('New instrument track', 'Synth with a step sequencer', () => { const nt = api.addTrack(null, 'midi', 'synth'); if (nt) { S.selected = nt.id; api.seqView.enable(nt); render(); } }, 'accent'))];
+    }
+    return [pager(t), ...api.seqView.phoneScreen()];
   }
   function render() {
     if (!active || !root || !S.project) return;
@@ -237,7 +266,7 @@ export function createPhone(api) {
     root.querySelector('.ph-play').replaceChildren(icon(engine.playing ? 'stop' : 'play'));
     root.querySelector('.ph-play').classList.toggle('on', engine.playing);
     const body = root.querySelector('.ph-body'); body.innerHTML = ''; wave = null;
-    const scr = tab === 'record' ? recordScreen(t) : tab === 'tracks' ? tracksScreen(t) : tab === 'mix' ? mixScreen(t) : tab === 'effects' ? effectsScreen(t) : moreScreen();
+    const scr = tab === 'record' ? recordScreen(t) : tab === 'tracks' ? tracksScreen(t) : tab === 'seq' ? seqScreen(t) : tab === 'mix' ? mixScreen(t) : tab === 'effects' ? effectsScreen(t) : moreScreen();
     body.dataset.tab = tab; body.append(...scr.filter(Boolean));
   }
   function frame(ts) {

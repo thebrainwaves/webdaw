@@ -22,7 +22,9 @@ await new Promise((r) => server.stdout.once('data', r));
 
 // ---- the engine + a tiny side channel for the test's own checks (string ids never collide with the app's numeric ids)
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'auduio-e2e-plugins-'));
-const eng = spawn(EXE, [], { env: { ...process.env, AUDUIO_ENGINE_DATA: data, AUDUIO_VST3_PATH: VST3 }, stdio: ['pipe', 'pipe', 'pipe'] });
+// AUDUIO_TEST_WINE=1: Windows engine build under wine; its paths are mapped to Z:\...
+const ep = (p) => (process.env.AUDUIO_TEST_WINE === '1' && p.startsWith('/') ? 'Z:' + p.replace(/\//g, '\\') : p);
+const eng = spawn(EXE, [], { env: { ...process.env, AUDUIO_ENGINE_DATA: ep(data), AUDUIO_VST3_PATH: ep(VST3) }, stdio: ['pipe', 'pipe', 'pipe'] });
 let page = null, buf = '', stderr = ''; const mine = new Map(); let seq = 0; const lines = [];
 eng.stderr.on('data', (d) => (stderr += d));
 eng.stdout.on('data', (d) => {

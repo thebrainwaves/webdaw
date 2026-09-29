@@ -108,8 +108,9 @@ export const DB = {
     const db = await openDB();
     const project = await new Promise((res, rej) => { const r = db.transaction('projects').objectStore('projects').get(id); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
     if (!project) { db.close(); return null; }
-    const buffers = new Map();
+    const buffers = new Map(), lazy = lazyBufferIds(project);
     for (const bid of usedBufferIds(project)) {
+      if (lazy.has(bid)) continue;
       const rec = await new Promise((res) => { const r = db.transaction('buffers').objectStore('buffers').get(bid); r.onsuccess = () => res(r.result); r.onerror = () => res(null); });
       if (!rec) continue;
       const b = ctx.createBuffer(rec.channels.length, rec.channels[0].length, rec.sampleRate);
@@ -118,7 +119,17 @@ export const DB = {
       buffers.set(bid, b);
     }
     db.close();
-    return { project, buffers };
+    return { project, buffers, lazy };
+  },
+  // one stored buffer (lazy drum-pad samples)
+  async loadBuffer(bid, ctx) {
+    const db = await openDB();
+    try {
+      const rec = await new Promise((res) => { const r = db.transaction('buffers').objectStore('buffers').get(bid); r.onsuccess = () => res(r.result); r.onerror = () => res(null); });
+      if (!rec || !rec.channels || !rec.channels.length) return null;
+      const b = ctx.createBuffer(rec.channels.length, rec.channels[0].length, rec.sampleRate);
+      rec.channels.forEach((d, c) => b.getChannelData(c).set(d)); b._saved = true; return b;
+    } finally { db.close(); }
   },
   async lastProjectId() {
     const db = await openDB();
@@ -137,10 +148,28 @@ export const DB = {
     db.close();
     await DB.gcBuffers();
   },
+  // "My Samples": a list of the user's samples, kept across projects (the audio is stored once, by buffer id)
+  async getLibrary() {
+    const db = await openDB();
+    try { const v = await idbReq(db.transaction('meta').objectStore('meta').get('mySamples')); return Array.isArray(v && v.value) ? v.value : []; } finally { db.close(); }
+  },
+  async setLibrary(list) {
+    const db = await openDB();
+    try { await tx(db, ['meta'], 'readwrite', (t) => t.objectStore('meta').put({ key: 'mySamples', value: list.slice(0, 512) })); } finally { db.close(); }
+  },
+  async putBuffer(id, b) {
+    const db = await openDB();
+    try {
+      await tx(db, ['buffers'], 'readwrite', (t) => { const chans = []; for (let c = 0; c < b.numberOfChannels; c++) chans.push(b.getChannelData(c).slice()); t.objectStore('buffers').put({ id, sampleRate: b.sampleRate, channels: chans }); });
+      b._saved = true;
+    } finally { db.close(); }
+  },
   async gcBuffers() {
     const db = await openDB();
     const projects = await new Promise((res) => { const r = db.transaction('projects').objectStore('projects').getAll(); r.onsuccess = () => res(r.result || []); });
     const keep = new Set(); projects.forEach((p) => usedBufferIds(p).forEach((id) => keep.add(id)));
+    const lib = await idbReq(db.transaction('meta').objectStore('meta').get('mySamples')).catch(() => null);
+    if (lib && Array.isArray(lib.value)) lib.value.forEach((x) => x && x.id && keep.add(x.id));
     const keys = await new Promise((res) => { const r = db.transaction('buffers').objectStore('buffers').getAllKeys(); r.onsuccess = () => res(r.result || []); });
     await tx(db, ['buffers'], 'readwrite', (t) => { keys.forEach((k) => { if (!keep.has(k)) t.objectStore('buffers').delete(k); }); });
     db.close();
@@ -151,7 +180,15 @@ export function usedBufferIds(project) {
   for (const t of project.tracks) {
     t.slots.forEach((c) => c && c.bufferId && s.add(c.bufferId));
     t.arrangement.forEach((c) => c.bufferId && s.add(c.bufferId));
+    if (t.inst && t.inst.pads) Object.values(t.inst.pads).forEach((p) => p && p.bufferId && s.add(p.bufferId));
   }
+  return s;
+}
+// drum-pad samples are loaded lazily (a 128-pad kit could otherwise take a lot of memory at load)
+export function lazyBufferIds(project) {
+  const s = new Set();
+  for (const t of project.tracks) if (t.inst && t.inst.pads) Object.values(t.inst.pads).forEach((p) => p && p.bufferId && s.add(p.bufferId));
+  for (const t of project.tracks) { t.slots.forEach((c) => c && c.bufferId && s.delete(c.bufferId)); t.arrangement.forEach((c) => c.bufferId && s.delete(c.bufferId)); }
   return s;
 }
 

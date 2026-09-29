@@ -3,7 +3,7 @@
 import http from 'node:http'; import fs from 'node:fs'; import path from 'node:path';
 const [dir = 'dist', port = '8080', base = '/'] = process.argv.slice(2);
 const root = path.resolve(dir);
-const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.wav': 'audio/wav' };
+const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.wav': 'audio/wav', '.pdf': 'application/pdf' };
 http.createServer((req, res) => {
   let u = decodeURIComponent(req.url.split('?')[0]);
   if (!u.startsWith(base)) { res.writeHead(302, { Location: base }); return res.end(); }

@@ -5,7 +5,7 @@
 #   cmake -S engine -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release [-DJUCE_DIR=/path/to/JUCE]
 #   cmake --build engine/build --config Release
 cmake_minimum_required(VERSION 3.22)
-project(AuduioEngine VERSION 0.4.0 LANGUAGES C CXX)
+project(AuduioEngine VERSION 0.5.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(APPLE)

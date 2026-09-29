@@ -98,6 +98,9 @@ export function createBrowser(api) {
     let it; try { it = JSON.parse(e.dataTransfer.getData(DEVICE_MIME)); } catch (err) { return; }
     if (!it || typeof it !== 'object') return;
     if (root.contains(e.target)) return; // dropped back on the browser
+    // a sample dropped on a drum pad goes to that pad
+    const pad = it.kind === 'sample' && e.target.closest && e.target.closest('.dr-pad[data-note]');
+    if (pad) { const rk = pad.closest('.dr-rack'); api.onAdd({ ...it, padNote: +pad.dataset.note }, rk ? rk.dataset.tid : null); return; }
     const t = api.resolveTarget(e.clientX, e.clientY);
     api.onAdd(it, t ? t.trackId : 'new');
   }, true);
