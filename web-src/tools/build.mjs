@@ -1,6 +1,6 @@
 // Build: copy src/ -> dist/ and inject the precache list + content hash into the service worker.
-import fs from 'node:fs'; import path from 'node:path'; import crypto from 'node:crypto';
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+import fs from 'node:fs'; import path from 'node:path'; import crypto from 'node:crypto'; import { fileURLToPath } from 'node:url';
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const src = path.join(root, 'src'), dist = path.join(root, 'dist');
 // Clean dist/ but PRESERVE its git repo (dist/.git is the GitHub Pages deploy repo) and any CNAME.
 const KEEP = new Set(['.git', 'CNAME']);
