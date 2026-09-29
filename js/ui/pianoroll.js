@@ -4,7 +4,7 @@
 import { h, $, haptic } from './dom.js';
 import { noteName } from '../audio/pitchdsp.js';
 
-export function openPianoRoll({ clip, title, color = '#ffa529', history, onChange, preview }) {
+export function openPianoRoll({ clip, title, color = '#8B5CF6', history, onChange, preview }) {
   const view = { x0: 0, ppb: 60, top: 84, nh: 14 }; // top = highest visible note
   let grid = 0.25, sel = null, drag = null;
   const KEYW = 44;

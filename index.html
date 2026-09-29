@@ -17,6 +17,7 @@
 <link rel="stylesheet" href="./css/style.css">
 </head>
 <body>
+<svg width="0" height="0" class="defs" aria-hidden="true" focusable="false"><defs><linearGradient id="kgrad" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#8B5CF6"/><stop offset="1" stop-color="#EF4444"/></linearGradient></defs></svg>
 <header id="topbar">
   <div class="brand"><span class="logo">◆</span><span id="projName" class="proj-name">WebDAW</span><span id="saveState" class="save-state" title="• = unsaved changes (auto-saves in a moment)"></span></div>
   <div class="transport">
@@ -25,7 +26,9 @@
     <button id="btnRec" class="rec" title="Arrangement record (R): records all armed tracks onto the timeline" aria-label="Record">●</button>
     <button id="btnAutoRec" class="autorec adv" title="Auto-record: waits until an armed input gets loud, then records (with pre-roll). Threshold in Preferences." aria-label="Auto record">AUTO</button>
     <button id="btnMetro" title="Metronome (M)" aria-label="Metronome" class="metro adv">MET</button>
-    <label class="bpm" title="Tempo in beats per minute">BPM <input id="bpm" type="number" min="40" max="300" value="120" inputmode="numeric"></label>
+    <label class="bpm" title="Tempo in beats per minute">BPM <input id="bpm" type="number" min="40" max="300" step="0.1" value="120" inputmode="decimal"></label>
+    <button id="btnTap" class="tap" title="Tap tempo (T): tap 3–8 times on the beat" aria-label="Tap tempo">TAP</button>
+    <button id="btnTempo" class="tempo-btn" title="Auto-timing: detect the band's tempo, follow it live, lock it" aria-label="Auto-timing">≈</button>
     <div id="posDisplay" class="pos" title="Position: bar.beat.sixteenth">1.1.1</div>
   </div>
   <div class="hist"><button id="btnUndo" class="btn-undo" title="Undo (Ctrl/⌘+Z)" aria-label="Undo" disabled>↶</button><button id="btnRedo" class="btn-redo" title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo" disabled>↷</button></div>
@@ -33,7 +36,7 @@
   <button id="btnAutoMix" class="automix" title="Auto-Mix setup: tell the app what each track is (or let it suggest), then it sets up EQ, compression and effects">Auto-Mix</button>
   <button id="btnEasy" class="tog" title="Easy Mode: fewer controls, bigger labels">Easy</button>
   <button id="btnHelp" class="tog" title="Help mode: tap any control to see what it does" aria-label="Help">?</button>
-  <canvas id="masterMeterTop" class="meter h top" aria-label="Master level"></canvas>
+  <canvas id="masterScope" class="scope top" aria-label="Master waveform (oscilloscope)" title="Master output waveform"></canvas><canvas id="masterMeterTop" class="meter h top" aria-label="Master level"></canvas>
   <button id="btnMenu" class="menu-btn" aria-label="Menu" title="Menu: projects, export/import, settings, preferences">☰</button>
   <div id="menu" class="dropdown"></div>
 </header>

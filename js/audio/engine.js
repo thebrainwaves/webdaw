@@ -3,6 +3,7 @@ import { createEffect } from './effects.js';
 import { createInstrument } from './instruments.js';
 import { Adaptive } from './adaptive.js';
 import { KeyFollower } from './keyfollow.js';
+import { TempoAnalyzer, TempoFollower } from './tempo.js';
 
 const dbToLin = (db) => (db <= -60 ? 0 : Math.pow(10, db / 20));
 
@@ -21,6 +22,7 @@ export class Engine {
     this.latencyOffsetMs = 0;
     this.listeners = {};
     this.workletOK = false;
+    this.procLagExtra = 0;
   }
   on(ev, fn) { (this.listeners[ev] = this.listeners[ev] || []).push(fn); }
   emit(ev, data) { (this.listeners[ev] || []).forEach((f) => f(data)); }
@@ -44,11 +46,15 @@ export class Engine {
     this.master.meter = this.makeMeter('master');
     this.master.out.connect(this.master.meter);
     this.master.meter.connect(ctx.destination);
+    this.scopeAn = ctx.createAnalyser(); this.scopeAn.fftSize = 2048; this.master.out.connect(this.scopeAn);
     this.metroGain = ctx.createGain(); this.metroGain.gain.value = 0.5; this.metroGain.connect(ctx.destination);
     this._sched = setInterval(() => this.schedulerTick(), 25);
     this._sense = setInterval(() => this.senseTick(), 50);
     this.autoRec = { threshold: -40, preroll: 1, state: 'off' };
     this.keySum = ctx.createGain(); this.keyFollower = new KeyFollower(ctx, this.keySum);
+    // tempo detection bus: every track input (playback, pre-FX) + armed inputs; never the metronome
+    this.tempoSum = ctx.createGain();
+    this.tempo = { listening: false, mode: 'off', lockOnDetect: false, est: null, analyzer: null, follower: new TempoFollower(), goodRuns: 0, clickOffsetMs: 0 };
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.resume(); });
   }
   // resume() can stay pending (no output device, iOS interruptions) - never block the UI on it
@@ -169,6 +175,8 @@ export class Engine {
     const tonal = t.kind !== 'group' && t.instrument !== 'drums' && !(t.kind === 'midi' && t.inst && t.inst.type === 'drums');
     if (tonal !== !!n.keyTapped) { try { tonal ? n.input.connect(this.keySum) : n.input.disconnect(this.keySum); } catch (e) {} n.keyTapped = tonal; }
     if (n.adaptive.enabled !== !!a.enabled) n.adaptive.setEnabled(!!a.enabled);
+    const tt = t.kind !== 'group';
+    if (tt !== !!n.tempoTapped) { try { tt ? n.input.connect(this.tempoSum) : n.input.disconnect(this.tempoSum); } catch (e) {} n.tempoTapped = tt; }
   }
   fxInstances(trackId) { return trackId === 'master' ? this.master.fx : (this.tracks.get(trackId) || { fx: [] }).fx; }
   setFxParam(trackId, idx, key, value) { const f = this.fxInstances(trackId)[idx]; if (f) f.set(key, value); }
@@ -261,6 +269,8 @@ export class Engine {
       const k = this.keyFollower.step();
       if (k) { this.project.key = { root: k.root, scale: k.scale }; this.updateBpmFx(); this.emit('key', k); }
     }
+    this._tempoTick = ((this._tempoTick || 0) + 1) % 10;
+    if (this._tempoTick === 0 && this.tempo.listening) this.tempoStep();
     if (this._adaptTick === 0) this.tracks.forEach((n) => { if (n.adaptive.enabled && (this.playing || n.inputChain)) n.adaptive.step(); });
   }
   // ------------------------------------------------------------------ auto-record (sound-activated with pre-roll)
@@ -311,7 +321,7 @@ export class Engine {
       gain.channelCount = 1; gain.channelCountMode = 'explicit';
       inp.splitter.connect(gain, ch, 0);
     }
-    gain.connect(n.monitor);
+    gain.connect(n.monitor); gain.connect(this.tempoSum);
     const analyser = this.ctx.createAnalyser(); analyser.fftSize = 1024; gain.connect(analyser);
     n.inputChain = { gain, from, stereo, latency: inp.latency, warning, channels: inp.channels, analyser, buf: new Float32Array(1024) };
     return n.inputChain;
@@ -328,17 +338,20 @@ export class Engine {
   get beatDur() { return 60 / this.project.bpm; }
   position() { return this.playing ? this.startPos + (this.ctx.currentTime - this.startCtxTime) : this.startPos; }
   posToTime(pos) { return this.startCtxTime + (pos - this.startPos); }
-  barFloor(pos) { return Math.floor(pos / this.barDur + 1e-6) * this.barDur; }
+  // grid offset (s): bar lines sit at gridOffset + k*barDur. Set by tempo detection/follow so the
+  // metronome lands on the band's downbeat; 0 for normal projects.
+  get gridOffset() { return (this.project && this.project.gridOffset) || 0; }
+  barFloor(pos) { const o = this.gridOffset; return o + Math.floor((pos - o) / this.barDur + 1e-6) * this.barDur; }
   nextBarTime() {
-    const pos = this.position(), bd = this.barDur;
-    let nb = Math.ceil((pos + 0.02) / bd) * bd;
+    const pos = this.position(), bd = this.barDur, o = this.gridOffset;
+    let nb = o + Math.ceil((pos - o + 0.02) / bd) * bd;
     return this.posToTime(nb);
   }
-  play(fromPos) {
+  play(fromPos, atCtxTime) {
     if (this.playing) return;
     this.resume();
     if (fromPos != null) this.startPos = fromPos;
-    this.startCtxTime = this.ctx.currentTime + 0.06;
+    this.startCtxTime = Math.max(this.ctx.currentTime + 0.06, atCtxTime || 0);
     this.playing = true;
     this.nextClick = null;
     this.midiSchedEnd = this.startCtxTime;
@@ -385,12 +398,15 @@ export class Engine {
       const end = c.start + c.duration;
       if (end <= pos) continue;
       const src = this.ctx.createBufferSource(); src.buffer = buf;
+      // transpose = repitch (tape-style: pitch and speed change together); timeline length stays c.duration
+      const rate = Math.pow(2, (c.transpose || 0) / 12); src.playbackRate.value = rate;
       const g = this.ctx.createGain(); g.gain.value = dbToLin(c.gain || 0);
       src.connect(g).connect(n.input);
       const when = Math.max(this.ctx.currentTime, this.posToTime(Math.max(pos, c.start)));
-      const offs = c.offset + Math.max(0, pos - c.start);
-      const dur = c.duration - Math.max(0, pos - c.start);
+      const offs = c.offset + Math.max(0, pos - c.start) * rate;
+      const dur = (c.duration - Math.max(0, pos - c.start)) * rate;
       try { src.start(when, offs, dur); } catch (e) { continue; }
+      src._clipId = c.id; src._gain = g;
       n.sources.push(src);
     }
   }
@@ -399,16 +415,128 @@ export class Engine {
     this.pollMeters();
     this.scheduleMidi();
     if (!this.metronome && !this.countIn) return;
-    const bd = this.beatDur, ahead = this.ctx.currentTime + 0.12;
+    const bd = this.beatDur, ahead = this.ctx.currentTime + 0.12, o = this.gridOffset, bpb = this.project.beatsPerBar || 4;
+    // click k sits at position o + k*bd; the acoustic click is moved earlier by the output latency
+    // (+ user click offset) so it is heard on the beat. After a tempo/offset change the index is
+    // recomputed without re-clicking a beat that was already scheduled.
+    const lat = (this.tempo.mode !== 'off' || this.project.gridOffset ? (this.ctx.outputLatency || this.ctx.baseLatency || 0) : 0) - this.tempo.clickOffsetMs / 1000;
     if (this.nextClick == null) {
-      const pos = this.position();
-      this.nextClick = Math.ceil((pos - 0.001) / bd);
+      const from = Math.max(this.position(), this.lastClickPos != null && this.lastClickCtx > this.ctx.currentTime - 1 ? this.lastClickPos + bd * 0.5 : -Infinity);
+      this.nextClick = Math.ceil((from - o - 0.001) / bd);
     }
-    while (this.posToTime(this.nextClick * bd) < ahead) {
-      const t = this.posToTime(this.nextClick * bd);
-      if (t >= this.ctx.currentTime - 0.01) this.click(t, this.nextClick % (this.project.beatsPerBar || 4) === 0);
+    while (this.posToTime(o + this.nextClick * bd) - lat < ahead) {
+      const pos = o + this.nextClick * bd, t = this.posToTime(pos) - lat;
+      if (t >= this.ctx.currentTime - 0.01) { this.click(t, ((this.nextClick % bpb) + bpb) % bpb === 0); this.lastClickPos = pos; this.lastClickCtx = t; this.emit('click', { t, pos, k: this.nextClick }); }
       this.nextClick++;
     }
+  }
+  // live clip edits from the clip detail view: gain in place; transpose/loop via a short reschedule
+  updateClipLive(t, c, what) {
+    const n = this.tracks.get(t.id); if (!n) return;
+    const now = this.ctx.currentTime;
+    if (what === 'gain') {
+      n.sources.forEach((s) => { if (s._clipId === c.id && s._gain) s._gain.gain.setTargetAtTime(dbToLin(c.gain || 0), now, 0.01); });
+      if (n.sessionSource && n.sessionSource._clip === c && n.sessionSource._gain) n.sessionSource._gain.gain.setTargetAtTime(dbToLin(c.gain || 0), now, 0.01);
+      return;
+    }
+    if (n.sessionSource && n.sessionSource._clip === c) {
+      const src = n.sessionSource, buf = src.buffer, ls = Math.max(0, Math.min(buf.duration - 0.01, c.loopStart || 0));
+      src.playbackRate.setValueAtTime(Math.pow(2, (c.transpose || 0) / 12), now);
+      src.loopStart = ls; src.loopEnd = ls + Math.min(c.loopLength || buf.duration, buf.duration - ls);
+      return;
+    }
+    this.rescheduleTrack(t);
+  }
+  // ------------------------------------------------------------------ tempo (auto-timing)
+  // change tempo; keepPhase re-anchors the grid so the beat position at the playhead stays continuous
+  setTempo(bpm, { keepPhase = true } = {}) {
+    bpm = Math.max(40, Math.min(300, Math.round(bpm * 100) / 100));
+    const old = this.project.bpm; if (Math.abs(bpm - old) < 1e-6) return;
+    if (this.playing && keepPhase) { const p = this.position(), o = this.gridOffset; this.project.gridOffset = p - (p - o) * old / bpm; }
+    this.project.bpm = bpm; this.updateBpmFx(); this.nextClick = null; this.emit('tempo', { bpm });
+  }
+  startTempoListen() {
+    const T = this.tempo; if (T.listening) return;
+    T.analyzer = new TempoAnalyzer(this.ctx.sampleRate, { windowSec: 12 });
+    const size = 2048; const sp = this.ctx.createScriptProcessor(size, 1, 1);
+    // ScriptProcessor input lags its playbackTime by ~two buffers in Chromium (measured with scheduled clicks in tests/e2e-tempo.mjs)
+    sp.onaudioprocess = (e) => { const x = e.inputBuffer.getChannelData(0); T.analyzer.push(new Float32Array(x), e.playbackTime - 2 * size / this.ctx.sampleRate - this.procLagExtra); };
+    this.tempoSum.connect(sp); sp.connect(this.sink); T.sp = sp; T.listening = true; T.est = null; T.goodRuns = 0; T.startedAt = this.ctx.currentTime;
+    this.emit('tempostate');
+  }
+  stopTempoListen() {
+    const T = this.tempo; if (!T.listening) return;
+    try { this.tempoSum.disconnect(T.sp); T.sp.disconnect(); } catch (e) {} T.sp.onaudioprocess = null; T.sp = null; T.listening = false; T.mode = 'off';
+    if (T.detect) { const d = T.detect; T.detect = null; d.resolve(null); }
+    this.emit('tempostate');
+  }
+  inputLatencyForTempo() {
+    // detections from live inputs arrive late by the input latency; playback tracks do not
+    if (this.playing && this.project.tracks.some((t) => t.arrangement.length || t.slots.some(Boolean))) return 0;
+    let l = 0; this.tracks.forEach((n) => { if (n.inputChain) l = Math.max(l, n.inputChain.latency || 0); }); return l;
+  }
+  tempoStep() {
+    const T = this.tempo, now = this.ctx.currentTime; if (!T.analyzer) return;
+    const heard = T.analyzer.seconds();
+    const est = T.analyzer.analyse({ windowSec: T.detect ? Math.min(32, heard) : 10, beatsPerBar: this.project.beatsPerBar || 4, prefer: T.mode === 'follow' && T.follower.bpm ? T.follower.bpm : null });
+    if (est) { const lat = this.inputLatencyForTempo(); est.beatTimes = est.beatTimes.map((t) => t - lat); est.downbeatTime -= lat; est.lastBeatTime -= lat; }
+    T.est = est; this.emit('tempoest', est);
+    if (T.detect) {
+      const d = T.detect, bars = d.bars, bpb = this.project.beatsPerBar || 4;
+      const need = est && est.confidence > 0.3 ? Math.max(4, bars * bpb * 60 / est.bpm) : 1e9;
+      d.progress = Math.min(1, heard / Math.min(need, d.maxSec)); this.emit('tempodetect', d);
+      if (heard >= Math.min(need, d.maxSec) || heard >= d.maxSec) { T.detect = null; this.applyDetected(est, d); d.resolve(est); if (T.mode === 'off') this.stopTempoListen(); }
+      return;
+    }
+    if (T.mode === 'follow') {
+      if (T.follower.bpm == null) T.follower.reset(this.project.bpm);
+      const u = T.follower.update(est, now);
+      if (u.changed) this.setTempo(u.bpm, { keepPhase: true });
+      if (est && est.confidence >= 0.5 && this.playing) {
+        // phase from a short recent window (a long window lags while the tempo drifts)
+        const pe = T.analyzer.analyse({ windowSec: 5, beatsPerBar: this.project.beatsPerBar || 4, prefer: this.project.bpm });
+        if (pe && pe.confidence >= 0.4) { const lat = this.inputLatencyForTempo(); pe.lastBeatTime -= lat; this.nudgePhase(pe); }
+      }
+      if (T.lockOnDetect) {
+        T.goodRuns = est && est.confidence >= 0.6 && Math.abs(est.bpm - this.project.bpm) < 1 ? T.goodRuns + 1 : 0;
+        if (T.goodRuns >= 4) { T.mode = 'off'; this.emit('tempolock', { bpm: this.project.bpm }); this.stopTempoListen(); }
+      }
+    }
+  }
+  // move the grid toward the detected beat phase (max 20 ms per 0.5 s step: smooth, no jumps)
+  nudgePhase(est) {
+    const bd = this.beatDur, pos = this.startPos + (est.lastBeatTime - this.startCtxTime), o = this.gridOffset;
+    let err = (pos - o) % bd; if (err < 0) err += bd; if (err > bd / 2) err -= bd;
+    const step = Math.max(-0.02, Math.min(0.02, err * 0.5)); if (Math.abs(step) < 0.0005) return;
+    this.project.gridOffset = o + step; this.nextClick = null;
+  }
+  // put the detected tempo + downbeat into the project; if stopped, optionally start on the next downbeat
+  applyDetected(est, { startOnDownbeat = true } = {}) {
+    if (!est || est.confidence < 0.3) return false;
+    const bpb = this.project.beatsPerBar || 4;
+    this.project.bpm = Math.round(est.bpm * 100) / 100; this.updateBpmFx(); this.emit('tempo', { bpm: this.project.bpm });
+    const barDur = this.barDur, now = this.ctx.currentTime, outLat = this.ctx.outputLatency || this.ctx.baseLatency || 0;
+    if (this.playing) {
+      const dbPos = this.startPos + (est.downbeatTime - this.startCtxTime);
+      this.project.gridOffset = ((dbPos % barDur) + barDur) % barDur;
+    } else if (startOnDownbeat) {
+      // predict the next downbeat; position 0 = that downbeat; the metronome click is advanced by the output latency
+      let T = est.downbeatTime; const lead = 0.25 + outLat; if (T < now + lead) T += Math.ceil((now + lead - T) / barDur) * barDur;
+      this.project.gridOffset = 0; this.startPos = 0; this.metronome = true; this.play(0, T);
+    }
+    this.nextClick = null; void bpb;
+    return true;
+  }
+  detectTempo({ bars = 8, maxSec = 30, startOnDownbeat = true } = {}) {
+    this.startTempoListen();
+    if (this.tempo.detect) this.tempo.detect.resolve(null);
+    return new Promise((resolve) => { this.tempo.detect = { bars, maxSec, startOnDownbeat, resolve, progress: 0 }; });
+  }
+  setTempoFollow(on, { lock = false } = {}) {
+    const T = this.tempo; T.lockOnDetect = lock;
+    if (on) { this.startTempoListen(); T.mode = 'follow'; T.follower.reset(this.project.bpm); T.goodRuns = 0; }
+    else { T.mode = 'off'; if (!T.detect && !T.keepListening) this.stopTempoListen(); }
+    this.emit('tempostate');
   }
   click(t, accent) {
     const o = this.ctx.createOscillator(), g = this.ctx.createGain();
@@ -437,11 +565,13 @@ export class Engine {
     n.sources.forEach((s) => { try { s.stop(when); } catch (e) {} }); n.sources = [];
     if (n.sessionSource) { try { n.sessionSource.stop(when); } catch (e) {} }
     const src = this.ctx.createBufferSource(); src.buffer = buf; src.loop = true;
-    const loopLen = Math.min(clip.loopLength || buf.duration, buf.duration);
-    src.loopStart = 0; src.loopEnd = loopLen;
+    const ls = Math.max(0, Math.min(buf.duration - 0.01, clip.loopStart || 0));
+    const loopLen = Math.min(clip.loopLength || buf.duration, buf.duration - ls);
+    const rate = Math.pow(2, (clip.transpose || 0) / 12); src.playbackRate.value = rate;
+    src.loopStart = ls; src.loopEnd = ls + loopLen;
     const g = this.ctx.createGain(); g.gain.value = dbToLin(clip.gain || 0);
-    src.connect(g).connect(n.input);
-    src.start(when, offset % loopLen);
+    src.connect(g).connect(n.input); src._gain = g; src._clip = clip;
+    src.start(when, ls + ((offset * rate) % loopLen));
     n.sessionSource = src; n.sessionSlot = slot; n.queued = { slot, when };
     n.sessionStart = when - offset;
     setTimeout(() => { if (n.queued && n.queued.when === when) n.queued = null; this.emit('session'); }, Math.max(0, (when - this.ctx.currentTime) * 1000) + 20);

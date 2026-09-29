@@ -2,7 +2,8 @@
 import { MASTER_PRESET } from './audio/presets.js';
 import { validateProject } from './validate.js';
 
-export const TRACK_COLORS = ['#ff764d', '#ffa529', '#f2d33a', '#9bd44a', '#3ecf8e', '#2fc6d6', '#4a9cff', '#8a7dff', '#d36bff', '#ff5fa2', '#c9a27e', '#9aa4ad'];
+// varied, no yellows/oranges (v0.3 purple/red theme)
+export const TRACK_COLORS = ['#EF4444', '#8B5CF6', '#3ecf8e', '#2fc6d6', '#4a9cff', '#d36bff', '#ff5fa2', '#9bd44a', '#6366F1', '#14B8A6', '#F43F5E', '#9aa4ad'];
 export const NUM_SCENES = 8;
 export const uid = (p = 'id') => p + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
 

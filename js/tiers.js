@@ -12,10 +12,11 @@ export const FEATURES = {
   // core (Basic)
   'core.recording': 'basic', 'core.mixer': 'basic', 'core.midi': 'basic', 'inst.drums': 'basic', 'inst.synth': 'basic',
   'fx.eq': 'basic', 'fx.compressor': 'basic', 'fx.limiter': 'basic', 'fx.delay': 'basic', 'fx.reverb': 'basic', 'fx.distortion': 'basic',
-  'automix.basic': 'basic',
+  'automix.basic': 'basic', 'tempo.tap': 'basic',
   // Mid
   'fx.chorus': 'mid', 'fx.autopan': 'mid', 'fx.tremolo': 'mid', 'fx.amp': 'mid', 'fx.maximizer': 'mid', 'fx.pitch': 'mid',
   'fx.rack': 'mid', 'grouping': 'mid', 'inst.wavetable': 'mid', 'automix.full': 'mid', 'adaptive': 'mid',
+  'tempo.detect': 'mid', // auto-timing: live tempo detection, "Detect tempo", Follow mode, clip BPM detection
   // Large (everything, incl. future pro features)
   'keyfollow': 'large',
 };

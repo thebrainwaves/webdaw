@@ -1,4 +1,4 @@
-// WebDAW v0.2 — UI controller.
+// WebDAW v0.3 — UI controller.
 import { Engine } from './audio/engine.js';
 import { EFFECT_TYPES, EASY_PARAMS, EFFECT_HELP, PARAM_HELP } from './audio/effects.js';
 import { INSTRUMENT_TYPES, PAD_ORDER, wavetableFrame } from './audio/instruments.js';
@@ -7,10 +7,14 @@ import { analyzeBuffers, extractFeatures } from './audio/detect.js';
 import { PRESETS, INSTRUMENTS, INSTRUMENT_LABELS, ROLES, defaultPresetName } from './audio/presets.js';
 import { SCALES, NOTE_NAMES, noteName } from './audio/pitchdsp.js';
 import { chromaFromBuffer, chromaFromNotes, detectKey } from './audio/keydetect.js';
-import { quantizeBuffer } from './audio/timecorrect.js';
+import { detectTransients, quantizeBuffer } from './audio/timecorrect.js';
+import { TapTempo, detectBufferTempo, mixToMono } from './audio/tempo.js';
+import { drawWaveform, LivePeaks, drawScope as drawScopeLine } from './ui/waveform.js';
+import { createPhone, wantsPhone } from './ui/phone.js';
+import { createTutorial } from './ui/tutorial.js';
 import { BANDS } from './audio/adaptive.js';
 import { newProject, newTrack, DB, exportProjectZip, importProjectFile, uid, TRACK_COLORS, encodeWav } from './project.js';
-import { createKnob, createFader, fromNorm } from './ui/controls.js';
+import { createKnob, createFader, fromNorm, fmt as fmtParam } from './ui/controls.js';
 import { h, $, $$, toast, prefs, savePrefs, haptic } from './ui/dom.js';
 import { tap, addViz, drawSpectrum, drawCurve, drawScope, drawHistory, drawPitch, openVisualizer } from './ui/viz.js';
 import { openPianoRoll } from './ui/pianoroll.js';
@@ -36,7 +40,7 @@ async function saveNow() {
 const track = (id) => S.project.tracks.find((t) => t.id === id);
 const fmtPos = (pos) => {
   const bd = engine.beatDur, bpb = S.project.beatsPerBar || 4;
-  const beats = Math.max(0, pos) / bd; return `${Math.floor(beats / bpb) + 1}.${Math.floor(beats % bpb) + 1}.${Math.floor((beats % 1) * 4) + 1}`;
+  const beats = Math.max(0, pos - (S.project.gridOffset || 0)) / bd; return `${Math.floor(beats / bpb) + 1}.${Math.floor(beats % bpb) + 1}.${Math.floor((beats % 1) * 4) + 1}`;
 };
 function download(blob, name) {
   const a = h('a', { href: URL.createObjectURL(blob), download: name }); document.body.append(a); a.click();
@@ -90,6 +94,23 @@ function drawNotes(canvas, clip, color = 'rgba(0,0,0,.6)', beats = null) {
   for (const n of clip.notes) g.fillRect((n.t / L) * w, (hi - n.n) * nh, Math.max(1, (n.d / L) * w - 1), Math.max(1, nh - 1));
 }
 
+// Arrangement clip waveform: only the visible part of the clip is drawn, at full resolution for the
+// current zoom (peak mipmaps make this cheap), so waveforms stay sharp at any zoom level.
+const dbToGain = (db) => Math.pow(10, (db || 0) / 20);
+function drawArrClip(el) {
+  const c = el._clip, t = el._track; if (!c || c.type === 'midi' || !el.isConnected) return;
+  const cv = el.querySelector('canvas'); const sc = el.closest('.arr-scroll'); if (!cv || !sc) return;
+  const clipL = c.start * S.zoom, clipW = Math.max(4, c.duration * S.zoom);
+  const visL = Math.max(0, sc.scrollLeft - 200 - clipL), visR = Math.min(clipW, sc.scrollLeft + sc.clientWidth + 200 - clipL);
+  if (visR <= visL) { cv.style.width = '0px'; return; }
+  cv.style.left = visL + 'px'; cv.style.width = (visR - visL) + 'px';
+  const rate = Math.pow(2, (c.transpose || 0) / 12);
+  const a = (c.offset || 0) + (visL / S.zoom) * rate, b = (c.offset || 0) + (visR / S.zoom) * rate;
+  drawWaveform(cv, engine.buffers.get(c.bufferId), { startSec: a, endSec: b, color: t.color, gain: dbToGain(c.gain) });
+}
+let clipRedrawPending = false;
+function scheduleClipRedraw() { if (clipRedrawPending) return; clipRedrawPending = true; requestAnimationFrame(() => { clipRedrawPending = false; $$('#arrangeView .aclip').forEach((el) => { if (el._clip && el._clip.type !== 'midi') drawArrClip(el); }); }); }
+
 // ------------------------------------------------------------------ menus, help, dialogs
 function contextMenu(x, y, items) {
   closeMenus();
@@ -112,6 +133,17 @@ function longPress(el, fn) {
   const clear = () => clearTimeout(timer);
   el.addEventListener('pointerup', clear); el.addEventListener('pointercancel', clear);
   el.addEventListener('pointermove', (e) => { if (Math.hypot(e.clientX - sx, e.clientY - sy) > 10) clear(); });
+}
+// Touch: after a long-press (menu opens), moving the finger picks the clip up and drags it.
+function touchDragOnHold(el, getSrc) {
+  let armedAt = null, hx = 0, hy = 0;
+  el.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'touch') return; armedAt = null; const pe = e; hx = e.clientX; hy = e.clientY;
+    clearTimeout(el._holdT); el._holdT = setTimeout(() => { armedAt = pe; startClipDrag(getSrc(), pe, el, { onStart: () => closeMenus() }); }, 540); });
+  const clear = () => clearTimeout(el._holdT);
+  el.addEventListener('pointerup', clear); el.addEventListener('pointercancel', clear);
+  el.addEventListener('pointermove', (e) => { if (!armedAt && e.pointerType === 'touch' && Math.hypot(e.clientX - hx, e.clientY - hy) > 10) clear(); });
+  el.addEventListener('touchmove', (e) => { if (armedAt && e.cancelable) e.preventDefault(); }, { passive: false });
+  el.addEventListener('touchend', () => { armedAt = null; });
 }
 const consumedLongPress = (el) => { if (el._longPressed) { el._longPressed = false; return true; } return false; };
 function openDialog(title, content, buttons = [{ label: 'Close' }], cls = '') {
@@ -154,7 +186,7 @@ function showHelpBubble(el, x, y) {
 
 // ------------------------------------------------------------------ project lifecycle
 function normalise(project) {
-  project.key = project.key || { root: 0, scale: 'major' }; project.midiMap = project.midiMap || [];
+  project.key = project.key || { root: 0, scale: 'major' }; project.midiMap = project.midiMap || []; project.gridOffset = +project.gridOffset || 0;
   for (const t of project.tracks) {
     t.kind = t.kind || 'audio'; t.slots = t.slots || []; while (t.slots.length < project.scenes) t.slots.push(null);
     t.arrangement = t.arrangement || []; t.fx = t.fx || []; t.adaptive = t.adaptive || { enabled: false, amount: 60 };
@@ -222,7 +254,7 @@ function restoreSnapshot(json) {
   }
   engine.routeAll();
   applyFxDiff('master', old.master.fx, p.master.fx, () => engine.setMasterFx(p.master.fx));
-  engine.syncMaster(); engine.updateBpmFx();
+  engine.syncMaster(); engine.updateBpmFx(); engine.nextClick = null; if (engine.tempo.mode === 'follow') engine.tempo.follower.reset(p.bpm);
   if (S.selected !== 'master' && !track(S.selected)) S.selected = p.tracks[0] ? p.tracks[0].id : 'master';
   $('#bpm').value = p.bpm; $('#projName').textContent = p.name;
   S.sel = null; renderAll(); markDirty();
@@ -355,7 +387,7 @@ async function importAudioAt(files, pos, trackId) {
       if (!target) { target = newTrack(S.project, f.name.replace(/\.[^.]+$/, '').slice(0, 24)); S.project.tracks.push(target); engine.addTrack(target); }
       const id = addBuffer(buf);
       const c = { id: uid('c'), bufferId: id, start: Math.max(0, pos), offset: 0, duration: buf.duration, name: f.name.replace(/\.[^.]+$/, '').slice(0, 32) };
-      target.arrangement.push(c); engine.rescheduleTrack(target);
+      target.arrangement.push(c); trimUnder(target, c); engine.rescheduleTrack(target);
       S.sel = { kind: 'arr', trackId: target.id, clipId: c.id };
       placed++;
       if (!t) pos += 0; // multiple files on empty space -> one new track each, same position
@@ -372,6 +404,112 @@ function pickFiles(accept, multiple = true) {
   });
 }
 
+
+// ------------------------------------------------------------------ auto-timing: tap tempo, detect, follow, clip BPM
+const tapper = new TapTempo();
+function tapTempo() {
+  if (!gate('tempo.tap', 'Tap tempo')) return;
+  const b = tapper.tap(performance.now() / 1000); haptic(12);
+  const btn = $('#btnTap'); btn.classList.remove('flash'); void btn.offsetWidth; btn.classList.add('flash');
+  if (b) { history.push('Tap tempo', 'tap'); engine.setTempo(b, { keepPhase: true }); $('#bpm').value = S.project.bpm; markDirty(); }
+}
+function updateTempoButton() {
+  const b = $('#btnTempo'); if (!b) return; const T = engine.tempo, e = T.est;
+  b.classList.toggle('on', T.listening); b.classList.toggle('follow', T.mode === 'follow');
+  const conf = e ? e.confidence : 0;
+  b.textContent = T.listening ? (e && conf > 0.3 ? '≈' + Math.round(e.bpm) : '≈…') + (T.mode === 'follow' ? ' ⟳' : '') : '≈';
+  b.dataset.conf = !T.listening ? '' : conf >= 0.6 ? 'hi' : conf >= 0.35 ? 'mid' : 'lo';
+  b.title = T.listening ? `Live tempo ${e ? e.bpm.toFixed(1) + ' BPM, confidence ' + Math.round(conf * 100) + '%' : '(listening…)'}${T.mode === 'follow' ? ' — following' : ''}` : 'Auto-timing: detect the band\'s tempo, follow it live, lock it';
+}
+let tempoPop = null;
+function updateTempoPop() {
+  if (!tempoPop || !tempoPop.isConnected) return; const T = engine.tempo, e = T.est, q = (s) => tempoPop.querySelector(s);
+  q('.tp-bpm').textContent = e ? e.bpm.toFixed(1) : '—';
+  q('.tp-conf i').style.width = Math.round((e ? e.confidence : 0) * 100) + '%';
+  q('.tp-conf').title = 'Confidence ' + Math.round((e ? e.confidence : 0) * 100) + '%';
+  q('.tp-confv').textContent = e ? Math.round(e.confidence * 100) + '%' : T.listening ? 'listening…' : 'off';
+  q('.tp-alt').textContent = e ? 'or ' + e.alternatives.map((a) => a.toFixed(0)).join(' / ') : '';
+  const d = T.detect; const det = q('.tp-detect');
+  det.textContent = d ? `Listening… ${Math.round((d.progress || 0) * 100)}%` : 'Detect tempo (≈8 bars)'; det.classList.toggle('busy', !!d);
+  q('.tp-follow').checked = T.mode === 'follow';
+  q('.tp-grid').textContent = `Grid offset ${Math.round((S.project.gridOffset || 0) * 1000)} ms`;
+}
+function tempoPopover(anchor) {
+  closeMenus();
+  const T = engine.tempo, ok = allowed('tempo.detect');
+  const useBpm = (b, label) => { if (!b) return; history.push(label); engine.setTempo(b, { keepPhase: true }); $('#bpm').value = S.project.bpm; markDirty(); toast(`Tempo ${S.project.bpm} BPM`, 1500); };
+  const startOn = h('input', { type: 'checkbox', checked: prefs.tempoStartOnDownbeat !== false, onchange: (e) => { prefs.tempoStartOnDownbeat = e.target.checked; savePrefs(); } });
+  const lock = h('input', { type: 'checkbox', checked: !!T.lockOnDetect, onchange: (e) => { T.lockOnDetect = e.target.checked; } });
+  const follow = h('input', { type: 'checkbox', class: 'tp-follow', checked: T.mode === 'follow', onchange: (e) => {
+    if (e.target.checked && !gate('tempo.detect', 'Follow the band\'s tempo')) { e.target.checked = false; return; }
+    engine.setTempoFollow(e.target.checked, { lock: lock.checked }); if (e.target.checked) toast('Following the band\'s tempo', 1500);
+  } });
+  const clickOff = h('input', { type: 'number', min: -200, max: 200, step: 1, value: T.clickOffsetMs, class: 'num', title: 'Move the metronome click earlier (+) or later (−) if it feels off with your setup', onchange: (e) => { T.clickOffsetMs = Math.max(-200, Math.min(200, +e.target.value || 0)); engine.nextClick = null; } });
+  tempoPop = h('div', { class: 'popover tempo-pop' },
+    h('div', { class: 'tp-live' }, h('span', { class: 'tp-bpm' }, '—'), h('span', { class: 'tp-unit' }, 'BPM'), h('span', { class: 'tp-conf', 'aria-label': 'Confidence' }, h('i')), h('span', { class: 'tp-confv hint' }, ''), lockBadge('tempo.detect')),
+    h('div', { class: 'row' },
+      h('button', { class: 'small', title: 'Use the live estimate as the project tempo', onclick: () => { if (!gate('tempo.detect', 'Live tempo detection')) return; T.est && useBpm(T.est.bpm, 'Use detected tempo'); } }, 'Use'),
+      h('button', { class: 'small', title: 'Half time: halve the project tempo', onclick: () => useBpm(S.project.bpm / 2, 'Half time') }, '÷2'),
+      h('button', { class: 'small', title: 'Double time: double the project tempo', onclick: () => useBpm(S.project.bpm * 2, 'Double time') }, '×2'),
+      h('span', { class: 'tp-alt hint' })),
+    h('button', { class: 'tp-detect primary', title: 'Listen to armed inputs and playing tracks for about 8 bars, then set the tempo and the downbeat', onclick: async () => {
+      if (!gate('tempo.detect', 'Detect tempo')) return;
+      if (T.detect) { engine.stopTempoListen(); return; }
+      await engine.resume(); history.push('Detect tempo');
+      const est = await engine.detectTempo({ bars: S.detectBars || 8, startOnDownbeat: startOn.checked });
+      if (!est || est.confidence < 0.3) { toast('No steady beat found — play a few bars with a clear rhythm (or tap the tempo).', 3500); return; }
+      $('#bpm').value = S.project.bpm; updateTransportUI(); markDirty(); haptic(20);
+      toast(`Tempo ${S.project.bpm.toFixed(1)} BPM (${Math.round(est.confidence * 100)}%)${engine.playing ? ' — metronome on the downbeat' : ''}`, 3500);
+    } }, 'Detect tempo (≈8 bars)'),
+    h('label', { title: 'When stopped: start the transport and metronome exactly on the next downbeat' }, startOn, ' Start on the downbeat with click'),
+    h('label', { title: 'Keep tracking a live band: smooth, rate-limited tempo changes (moves the metronome and tempo-synced effects)' }, follow, ' Follow the band (live)'),
+    h('label', { title: 'Stop following once the tempo has been steady and confident for a couple of seconds' }, lock, ' Lock once detected'),
+    h('div', { class: 'row' }, h('span', { class: 'hint' }, 'Click offset'), clickOff, h('span', { class: 'hint' }, 'ms'),
+      h('span', { class: 'tp-grid hint' }), h('button', { class: 'small', title: 'Put bar 1 back at 0:00', onclick: () => { change('Reset grid offset', () => { S.project.gridOffset = 0; engine.nextClick = null; }); updateTempoPop(); } }, 'Reset')),
+    h('p', { class: 'hint' }, 'Listens to armed inputs and playing tracks. Use headphones so the click does not leak into the mic. Tap tempo: TAP button or T key.'));
+  document.body.append(tempoPop);
+  if (ok && !T.listening) { T.keepListening = true; engine.startTempoListen(); }
+  const r = anchor.getBoundingClientRect(); const pr = tempoPop.getBoundingClientRect();
+  tempoPop.style.left = Math.max(4, Math.min(r.left, innerWidth - pr.width - 4)) + 'px'; tempoPop.style.top = Math.min(r.bottom + 4, innerHeight - pr.height - 4) + 'px';
+  updateTempoPop();
+  const onDown = (ev) => { if (tempoPop && tempoPop.contains(ev.target)) { document.addEventListener('pointerdown', onDown, { once: true }); return; } closeTempoPop(); };
+  setTimeout(() => document.addEventListener('pointerdown', onDown, { once: true }), 0);
+}
+function closeTempoPop() {
+  if (tempoPop) { tempoPop.remove(); tempoPop = null; }
+  const T = engine.tempo; if (T.keepListening) { T.keepListening = false; if (T.mode === 'off' && !T.detect) engine.stopTempoListen(); }
+}
+// BPM of an imported/recorded clip; optionally use it as the project tempo and align the clip to the bar grid
+function clipTempoDialog(t, c, where) {
+  if (!gate('tempo.detect', 'Clip tempo detection')) return;
+  const buf = engine.buffers.get(c.bufferId); if (!buf) return toast('No audio in this clip.');
+  const dur = where === 'arr' ? c.duration : Math.min(buf.duration, c.loopLength || buf.duration);
+  const r = detectBufferTempo(buf, { fromSec: where === 'arr' ? c.offset || 0 : 0, durSec: dur, beatsPerBar: S.project.beatsPerBar || 4 });
+  if (!r || r.confidence < 0.2) return toast('No steady tempo found in this clip.', 3000);
+  c.bpm = Math.round(r.bpm * 10) / 10;
+  const bpmIn = h('input', { type: 'number', min: 40, max: 300, step: 0.1, value: c.bpm, class: 'num' });
+  const align = h('input', { type: 'checkbox', checked: where === 'arr' });
+  const content = h('div', { class: 'clip-tempo' },
+    h('p', {}, `Detected `, h('b', {}, `${r.bpm.toFixed(1)} BPM`), ` (confidence ${Math.round(r.confidence * 100)}%). Half/double: ${r.alternatives.map((a) => a.toFixed(1)).join(' / ')}.`),
+    h('label', {}, 'Project tempo ', bpmIn, ' BPM'),
+    where === 'arr' ? h('label', { title: 'Move the clip so its first detected downbeat sits exactly on a bar line' }, align, ' Also shift the clip so its downbeat lands on a bar line') : null,
+    h('p', { class: 'hint' }, 'Audio is not time-stretched; the project grid, metronome and tempo-synced effects follow the new tempo. Detection is a heuristic — check it by ear.'));
+  const dlg = openDialog('Clip tempo — ' + (c.name || 'clip'), content, [{ label: 'Close', value: 'cancel' }, { label: 'Set project tempo from clip', value: 'ok', primary: true }]);
+  dlg.addEventListener('close', () => {
+    if (dlg.returnValue !== 'ok') return;
+    const b = Math.max(40, Math.min(300, +bpmIn.value || r.bpm)); const scale = b / r.bpm;
+    change('Tempo from clip', () => {
+      S.project.bpm = Math.round(b * 100) / 100; engine.updateBpmFx(); engine.nextClick = null;
+      if (where === 'arr' && align.checked) {
+        const db = c.start + (r.downbeatSec) * 1; const bar = engine.barDur, o = S.project.gridOffset || 0;
+        let target = o + Math.round((db - o) / bar) * bar; if (c.start + (target - db) < 0) target += bar; c.start = Math.max(0, c.start + (target - db)); engine.rescheduleTrack(t);
+      }
+    });
+    void scale; $('#bpm').value = S.project.bpm; renderAll(); toast(`Project tempo ${S.project.bpm} BPM`, 2000);
+  }, { once: true });
+  return r;
+}
+
 // ------------------------------------------------------------------ transport + recording
 function updateTransportUI() {
   $('#btnPlay').classList.toggle('on', engine.playing);
@@ -380,6 +518,7 @@ function updateTransportUI() {
   const ar = engine.autoRec.state; const b = $('#btnAutoRec');
   b.classList.toggle('on', ar !== 'off'); b.classList.toggle('waiting', ar === 'waiting');
   b.textContent = ar === 'waiting' ? 'WAIT' : 'AUTO';
+  if (typeof phone !== 'undefined' && phone.active && phone.tab !== 'mix' && phone.tab !== 'effects') phone.render();
 }
 async function togglePlay() { await engine.resume(); engine.playing ? engine.stop() : engine.play(); }
 async function toggleRecord() {
@@ -397,6 +536,11 @@ engine.on('transport', updateTransportUI);
 engine.on('session', () => updateSessionStates());
 engine.on('autorecord', () => { toast('Sound detected — recording'); haptic(20); });
 engine.on('key', (k) => { toast(`Band key → ${k.name}`, 1800); updateKeyButton(); });
+engine.on('tempo', () => { const b = $('#bpm'); if (b && document.activeElement !== b) b.value = S.project.bpm; markDirty(); clearTimeout(S._tempoRender); S._tempoRender = setTimeout(() => { if (S.view === 'arrange') renderArrange(); }, 600); });
+engine.on('tempoest', () => { updateTempoButton(); updateTempoPop(); });
+engine.on('tempostate', () => { updateTempoButton(); updateTempoPop(); });
+engine.on('tempodetect', () => updateTempoPop());
+engine.on('tempolock', ({ bpm }) => { toast(`Tempo locked at ${bpm.toFixed(1)} BPM`, 2500); haptic(20); updateTempoButton(); updateTempoPop(); });
 engine.on('recorded', (results) => {
   if (!results.length) return;
   history.push('Record');
@@ -409,10 +553,12 @@ engine.on('recorded', (results) => {
 });
 // MIDI arrangement recording
 engine.on('recstart', ({ startPos }) => {
+  S.liveRec = { startPos, peaks: new Map() };
   const tracks = S.project.tracks.filter((t) => t.kind === 'midi' && t.arm);
   S.midiRec = tracks.length ? { startPos, tracks: new Map(tracks.map((t) => [t.id, { open: new Map(), notes: [] }])) } : null;
 });
 engine.on('recstop', ({ stopPos }) => {
+  S.liveRec = null; $$('.rec-live').forEach((e) => e.remove());
   const R = S.midiRec; S.midiRec = null; if (!R) return;
   const bd = engine.beatDur; let made = 0;
   for (const [tid, r] of R.tracks) {
@@ -553,7 +699,7 @@ function clipOp(op) {
     const buf = cb.bufferId && engine.buffers.get(cb.bufferId);
     const dur = cb.duration || (cb.type === 'midi' ? cb.lengthBeats * engine.beatDur : Math.min(buf ? buf.duration : 1, cb.loopLength || 1));
     const c = { ...cb, id: uid('c'), start: engine.position(), offset: cb.offset || 0, duration: dur }; delete c.loopLength;
-    change('Paste clip', () => { t.arrangement.push(c); engine.rescheduleTrack(t); });
+    change('Paste clip', () => { t.arrangement.push(c); trimUnder(t, c); engine.rescheduleTrack(t); });
     S.sel = { kind: 'arr', trackId: t.id, clipId: c.id }; renderArrange(); return;
   }
   if (!sc || !sc.c) return;
@@ -566,7 +712,7 @@ function clipOp(op) {
     S.sel = null; renderAll(); return;
   }
   if (op === 'dup') {
-    if (S.sel.kind === 'arr') { const d = { ...JSON.parse(JSON.stringify(c)), id: uid('c'), start: c.start + c.duration }; change('Duplicate clip', () => { t.arrangement.push(d); engine.rescheduleTrack(t); }); S.sel = { kind: 'arr', trackId: t.id, clipId: d.id }; renderArrange(); }
+    if (S.sel.kind === 'arr') { const d = { ...JSON.parse(JSON.stringify(c)), id: uid('c'), start: c.start + c.duration }; change('Duplicate clip', () => { t.arrangement.push(d); trimUnder(t, d); engine.rescheduleTrack(t); }); S.sel = { kind: 'arr', trackId: t.id, clipId: d.id }; renderArrange(); }
     else { const free = t.slots.findIndex((x, i) => !x && i > sc.slot); if (free < 0) return toast('No free slot below'); change('Duplicate clip', () => { t.slots[free] = JSON.parse(JSON.stringify(c)); }); S.sel = { kind: 'slot', trackId: t.id, slot: free }; renderSession(); }
     return;
   }
@@ -575,17 +721,18 @@ function clipOp(op) {
     if (p <= c.start || p >= c.start + c.duration) return toast('Move the playhead inside the selected clip to split.');
     const cut = p - c.start;
     change('Split clip', () => {
-      const right = { ...JSON.parse(JSON.stringify(c)), id: uid('c'), start: p, offset: (c.offset || 0) + cut, duration: c.duration - cut };
+      const right = { ...JSON.parse(JSON.stringify(c)), id: uid('c'), start: p, offset: (c.offset || 0) + cut * clipRate(c), duration: c.duration - cut };
       c.duration = cut; t.arrangement.push(right); engine.rescheduleTrack(t);
     });
     renderArrange();
   }
 }
-function renderToolsState() { $$('.view-tools').forEach((vt) => { vt.querySelectorAll('button').forEach((b) => { if (/^(Copy|Dup|Del)$/.test(b.textContent)) b.disabled = !S.sel; if (b.textContent === 'Paste') b.disabled = !S.clipboard; if (b.dataset.needsArr) b.disabled = !(S.sel && S.sel.kind === 'arr'); }); }); }
+function renderToolsState() { syncBottomToSelection(); $$('.view-tools').forEach((vt) => { vt.querySelectorAll('button').forEach((b) => { if (/^(Copy|Dup|Del)$/.test(b.textContent)) b.disabled = !S.sel; if (b.textContent === 'Paste') b.disabled = !S.clipboard; if (b.dataset.needsArr) b.disabled = !(S.sel && S.sel.kind === 'arr'); }); }); }
 
 // ------------------------------------------------------------------ session view
 function renderSession() {
   const root = $('#sessionView'); root.innerHTML = '';
+  if (!root._dropBound) { root._dropBound = true; bindSessionDrop(root); }
   root.append(viewTools());
   const grid = h('div', { class: 'session-grid' });
   for (const { t, depth, hidden } of displayOrder()) {
@@ -647,6 +794,7 @@ function trackMenu(t, x, y) {
 }
 function renameTrack(t) { const n = prompt('Track name', t.name); if (n) change('Rename track', () => { t.name = n.slice(0, 32); renderAll(); }); }
 function selectTrack(id) {
+  if (S.bottom === 'clip') { S.bottom = 'devices'; S.selected = id; renderDevices(); }
   if (S.selected === id) return;
   S.selected = id;
   $$('#sessionView .col-head').forEach((e) => e.classList.toggle('sel', e.closest('.col').dataset.id === id));
@@ -663,9 +811,10 @@ function sessionColumn(t) {
     if (clip) {
       s.append(h('span', { class: 'play-ico' }, '▶'), h('span', { class: 'clip-name' }, clip.name || 'Clip'), h('div', { class: 'prog' }));
       const cv = h('canvas', { class: 'mini-wave' }); s.append(cv);
-      requestAnimationFrame(() => clip.type === 'midi' ? drawNotes(cv, clip, 'rgba(0,0,0,.4)') : drawWave(cv, engine.buffers.get(clip.bufferId), 0, clip.loopLength, 'rgba(0,0,0,.35)'));
+      requestAnimationFrame(() => clip.type === 'midi' ? drawNotes(cv, clip, t.color) : drawWaveform(cv, engine.buffers.get(clip.bufferId), { startSec: clip.loopStart || 0, endSec: (clip.loopStart || 0) + (clip.loopLength || 1), color: t.color, stereo: false, gain: dbToGain(clip.gain) }));
     } else s.append(h('span', { class: 'slot-btn' }));
-    s.addEventListener('click', () => { if (!consumedLongPress(s)) onSlotClick(t, i); });
+    s.addEventListener('click', () => { if (s._dragMoved) { s._dragMoved = false; return; } if (!consumedLongPress(s)) onSlotClick(t, i); });
+    if (clip) { s.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'touch') startClipDrag({ kind: 'slot', t, i }, e, s); }); touchDragOnHold(s, () => ({ kind: 'slot', t, i })); }
     s.addEventListener('dblclick', () => { if (clip && clip.type === 'midi') editMidiClip(t, clip); else if (!clip && t.kind === 'midi') newMidiClipInSlot(t, i); });
     longPress(s, (x, y) => slotMenu(t, i, x, y));
     slots.append(s);
@@ -683,7 +832,10 @@ function slotMenu(t, i, x, y) {
     S.clipboard ? { label: 'Paste', fn: () => clipOp('paste') } : null,
   ]);
   contextMenu(x, y, [
+    { label: '✋ Pick up / move… (then tap “Place here”)', fn: () => pickUp({ kind: 'slot', t, i }) },
+    { label: 'Move to Arrangement @ playhead', fn: () => { placeClip({ kind: 'slot', t, i }, { kind: 'arr', trackId: t.id, pos: snapPos(engine.position()) }); toast('Moved to the Arrangement view'); } },
     clip.type === 'midi' ? { label: 'Edit notes (piano roll)', fn: () => editMidiClip(t, clip) } : null,
+    clip.type === 'midi' ? null : { label: 'Detect tempo (BPM)…', fn: () => clipTempoDialog(t, clip, 'slot') },
     { label: 'Rename…', fn: () => { const n = prompt('Clip name', clip.name); if (n) change('Rename clip', () => { clip.name = n.slice(0, 64); renderSession(); }); } },
     { label: 'Copy', fn: () => clipOp('copy') }, { label: 'Duplicate', fn: () => clipOp('dup') },
     { label: 'Copy to arrangement @ playhead', fn: () => {
@@ -816,7 +968,7 @@ function mixerStrip(t) {
   const btn = (cls, label, on, fn, title) => h('button', { class: `tbtn ${cls}` + (on ? ' on' : ''), onclick: fn, title }, label);
   strip.append(h('div', { class: 'strip-row btns' },
     t.kind === 'group' ? null : btn('arm', '●', t.arm, () => toggleArm(t), t.kind === 'midi' ? 'Arm: record MIDI and receive MIDI keyboard input' : 'Arm for recording (asks for microphone access)'),
-    t.kind === 'group' ? null : h('span', { class: 'sig', 'data-sig': t.id, title: 'Input signal indicator (green = signal, yellow = loud, red = clipping)' }),
+    t.kind === 'group' ? null : h('span', { class: 'sig', 'data-sig': t.id, title: 'Input signal indicator (green = signal, purple = loud, red = clipping)' }),
     t.kind === 'audio' ? btn('mon adv', 'IN', t.monitor, () => change('Monitor', () => { t.monitor = !t.monitor; engine.syncTrack(t); renderAll(); }), 'Input monitoring: hear the input through the effects (use headphones!)') : null,
     btn('mute', 'M', t.mute, () => change('Mute', () => { t.mute = !t.mute; engine.syncTrack(t); renderAll(); }), 'Mute'),
     btn('solo', 'S', t.solo, () => change('Solo', () => { t.solo = !t.solo; engine.syncMutes(); renderAll(); }), 'Solo')));
@@ -860,14 +1012,18 @@ function setZoom(z, anchorX) {
 }
 function renderArrange() {
   const root = $('#arrangeView'); const prevTop = S._arrTop || 0; root.innerHTML = '';
+  if (prefs.laneH) root.style.setProperty('--lane-h', prefs.laneH + 'px'); else root.style.removeProperty('--lane-h');
   const len = arrLength(), W = len * S.zoom;
   const needArr = (label, title, fn) => { const b = h('button', { class: 'adv', title, onclick: fn, disabled: !(S.sel && S.sel.kind === 'arr') }, label); b.dataset.needsArr = '1'; return b; };
   root.append(viewTools([
     needArr('Split', 'Split the selected clip at the playhead (S)', () => clipOp('split')),
     needArr('Quantize…', 'Quantize: move notes/hits in the selected clip onto the beat grid', () => quantizeDialog()),
+    needArr('BPM…', 'Detect the tempo of the selected audio clip and optionally use it as the project tempo', () => { const sc = selectedClip(); if (sc && sc.c && sc.c.type !== 'midi') clipTempoDialog(sc.t, sc.c, 'arr'); else toast('Select an audio clip first.'); }),
+    h('button', { class: 'snap-btn' + (prefs.snap !== false ? ' on' : ''), title: 'Snap clips to the beat grid when placing or moving them. Hold Alt or Shift while dropping to place freely.', onclick: () => toggleSnap() }, prefs.snap !== false ? 'Snap: on' : 'Snap: off'),
     h('span', { class: 'sep' }),
     h('button', { title: 'Zoom out', onclick: () => setZoom(S.zoom / 1.5) }, '−'),
     h('button', { title: 'Zoom in (or pinch / Ctrl+wheel)', onclick: () => setZoom(S.zoom * 1.5) }, '+'),
+    h('button', { class: 'lane-size', title: 'Track height: taller lanes show bigger waveforms (stereo clips split into L/R lanes)', onclick: () => { const L = [0, 90, 140]; const i = (L.indexOf(prefs.laneH || 0) + 1) % L.length; prefs.laneH = L[i]; savePrefs(); renderArrange(); } }, '↕'),
     h('button', { class: 'follow adv' + (S.follow ? ' on' : ''), title: 'Keep the playhead in view', onclick: (e) => { S.follow = !S.follow; e.target.classList.toggle('on', S.follow); } }, 'Follow'),
   ]));
   const body = h('div', { class: 'arr-body' });
@@ -908,7 +1064,7 @@ function renderArrange() {
   content.append(h('div', { class: 'playhead' }));
   scroll.append(content);
   const ov = h('canvas', { class: 'overview', title: 'Overview — tap or drag to scroll' });
-  scroll.addEventListener('scroll', () => { heads.scrollTop = scroll.scrollTop; S._arrScroll = scroll.scrollLeft; S._arrTop = scroll.scrollTop; drawOverview(); });
+  scroll.addEventListener('scroll', () => { heads.scrollTop = scroll.scrollTop; S._arrScroll = scroll.scrollLeft; S._arrTop = scroll.scrollTop; drawOverview(); scheduleClipRedraw(); });
   body.append(heads, scroll);
   root.append(body, ov);
   // --- lane hit testing (drop + long-press)
@@ -928,13 +1084,12 @@ function renderArrange() {
     if (!audio.length) return toast('Drop audio files (wav, mp3, ogg, flac, m4a…)');
     await engine.resume();
     const { pos, trackId } = hit(e.clientX, e.clientY);
-    const q = e.shiftKey ? pos : Math.round(pos / engine.beatDur) * engine.beatDur;
-    await importAudioAt(audio, q, trackId);
+    await importAudioAt(audio, snapPos(pos, e), trackId);
   });
   longPress(scroll, (x, y, ev) => {
     if (ev && ev.target && ev.target.closest && ev.target.closest('.aclip')) return;
     const { pos, trackId } = hit(x, y); const t = trackId && track(trackId);
-    const q = Math.round(pos / engine.beatDur) * engine.beatDur;
+    const q = snapPos(pos, ev);
     contextMenu(x, y, [
       { label: `Import audio here (${fmtPos(q)})…`, fn: async () => { const f = await pickFiles('audio/*'); if (f.length) { await engine.resume(); importAudioAt(f, q, t && t.kind === 'audio' ? t.id : null); } } },
       t && t.kind === 'midi' ? { label: 'New MIDI clip here (4 bars)', fn: () => newMidiClipArr(t, q) } : null,
@@ -972,15 +1127,19 @@ function arrClip(t, c) {
   const isSel = S.sel && S.sel.kind === 'arr' && S.sel.clipId === c.id;
   const el = h('div', { class: 'aclip' + (c.type === 'midi' ? ' midi' : '') + (isSel ? ' sel' : ''), 'data-clip': c.id, style: { left: c.start * S.zoom + 'px', width: Math.max(4, c.duration * S.zoom) + 'px' }, title: (c.name || 'Clip') + ' — drag to move (Shift = no snap), long-press for options' + (c.type === 'midi' ? ', double-tap to edit notes' : '') },
     h('div', { class: 'aclip-name' }, c.name || ''), h('canvas'));
-  requestAnimationFrame(() => c.type === 'midi' ? drawNotes($('canvas', el), c, 'rgba(0,0,0,.5)') : drawWave($('canvas', el), engine.buffers.get(c.bufferId), c.offset, c.duration));
+  el._clip = c; el._track = t;
+  requestAnimationFrame(() => c.type === 'midi' ? drawNotes($('canvas', el), c, t.color) : drawArrClip(el));
   el.addEventListener('dblclick', (e) => { e.stopPropagation(); if (c.type === 'midi') editMidiClip(t, c); });
   longPress(el, (x, y) => {
     S.sel = { kind: 'arr', trackId: t.id, clipId: c.id }; renderToolsState();
     contextMenu(x, y, [
+      { label: '✋ Pick up / move… (then tap “Place here”)', fn: () => pickUp({ kind: 'arr', t, c }) },
+      { label: 'Move to Session (first free slot)', fn: () => { const i = t.slots.findIndex((x) => !x); placeClip({ kind: 'arr', t, c }, { kind: 'slot', trackId: t.id, slot: i < 0 ? t.slots.length : i }); toast('Moved to the Session view'); } },
       c.type === 'midi' ? { label: 'Edit notes (piano roll)', fn: () => editMidiClip(t, c) } : null,
       { label: 'Copy', fn: () => clipOp('copy') }, { label: 'Duplicate', fn: () => clipOp('dup') },
       { label: 'Split at playhead', fn: () => clipOp('split') },
       { label: 'Quantize…', fn: () => quantizeDialog() },
+      c.type === 'midi' ? null : { label: 'Detect tempo (BPM)…', fn: () => clipTempoDialog(t, c, 'arr') },
       { label: 'Rename…', fn: () => { const n = prompt('Clip name', c.name); if (n) change('Rename clip', () => { c.name = n.slice(0, 64); renderArrange(); }); } },
       '-', { label: 'Delete', fn: () => clipOp('del') },
     ]);
@@ -989,31 +1148,335 @@ function arrClip(t, c) {
     if (e.pointerType === 'touch' && !e.isPrimary) return;
     S.sel = { kind: 'arr', trackId: t.id, clipId: c.id };
     $$('.aclip.sel').forEach((x) => x.classList.remove('sel')); el.classList.add('sel'); renderToolsState();
-    const sx = e.clientX, sy = e.clientY, s0 = c.start; let moved = false, pushed = false;
-    const move = (ev) => {
-      const dx = ev.clientX - sx;
-      if (!moved && Math.abs(dx) < 6) { if (Math.abs(ev.clientY - sy) > 10) cleanup(); return; }
-      if (!moved) { moved = true; try { el.setPointerCapture(e.pointerId); } catch (err) {} }
-      if (!pushed) { history.push('Move clip'); pushed = true; }
-      let ns = Math.max(0, s0 + dx / S.zoom);
-      if (!ev.shiftKey) { const q = engine.beatDur; ns = Math.round(ns / q) * q; }
-      c.start = ns; el.style.left = ns * S.zoom + 'px';
-    };
-    const cleanup = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); };
-    const up = () => { cleanup(); if (moved) { markDirty(); engine.rescheduleTrack(t); drawOverview(); } };
-    el.addEventListener('pointermove', move); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+    if (e.pointerType !== 'touch') startClipDrag({ kind: 'arr', t, c }, e, el); // touch: long-press picks the clip up (see touchDragOnHold)
   });
+  touchDragOnHold(el, () => ({ kind: 'arr', t, c }));
   return el;
 }
 
+// ------------------------------------------------------------------ v0.3 free clip placement
+// One placement model for everything: audio files, arrangement clips and session clips can go on any track,
+// any time position (snapped to the beat grid unless Snap is off or Alt/Shift is held) or any session slot, and
+// empty space creates a new track. The clip that lands wins: clips underneath on the same track are trimmed /
+// split / removed (Ableton-style). Every placement is one undo step.
+function setView(v) { S.view = v; renderAll(); }
+const snapOn = (ev) => prefs.snap !== false && !(ev && (ev.altKey || ev.shiftKey));
+function snapPos(pos, ev) { pos = Math.max(0, pos); if (!snapOn(ev)) return pos; const q = engine.beatDur; return Math.max(0, Math.round((pos - engine.gridOffset) / q) * q + engine.gridOffset); }
+function toggleSnap() { prefs.snap = prefs.snap === false; savePrefs(); $$('.snap-btn').forEach((b) => { b.classList.toggle('on', prefs.snap !== false); b.textContent = prefs.snap !== false ? 'Snap: on' : 'Snap: off'; }); toast(prefs.snap !== false ? 'Snap to beat grid on (hold Alt/Shift to place freely)' : 'Snap off — clips go exactly where you drop them', 1600); }
+const clipRate = (c) => (c.type === 'midi' ? 1 : Math.pow(2, (c.transpose || 0) / 12));
+// Trim/split/remove clips on track t that `top` overlaps. Mutates in place (call inside a history step).
+function trimUnder(t, top) {
+  const a = top.start, b = top.start + top.duration, eps = 1e-6, add = [];
+  t.arrangement = t.arrangement.filter((o) => {
+    if (o === top) return true;
+    const oa = o.start, ob = o.start + o.duration;
+    if (ob <= a + eps || oa >= b - eps) return true;            // no overlap
+    if (oa >= a - eps && ob <= b + eps) return false;           // fully covered: remove
+    if (oa < a && ob > b) {                                     // top sits inside: split into two
+      const right = { ...JSON.parse(JSON.stringify(o)), id: uid('c'), start: b, offset: (o.offset || 0) + (b - oa) * clipRate(o), duration: ob - b };
+      o.duration = a - oa; add.push(right); return true;
+    }
+    if (oa < a) { o.duration = a - oa; return true; }           // tail covered: shorten
+    const cut = b - oa; o.start = b; o.offset = (o.offset || 0) + cut * clipRate(o); o.duration -= cut; return true; // head covered
+  });
+  t.arrangement.push(...add);
+}
+// session clip <-> arrangement clip conversions
+function slotToArrClip(sc, start) {
+  const c = JSON.parse(JSON.stringify(sc)); const buf = sc.bufferId && engine.buffers.get(sc.bufferId);
+  c.id = uid('c'); c.start = start;
+  if (sc.type === 'midi') { c.offset = 0; c.duration = sc.lengthBeats * engine.beatDur; }
+  else { c.offset = sc.loopStart || 0; c.duration = (sc.loopLength || (buf ? buf.duration - c.offset : 1)) / clipRate(sc); }
+  delete c.loopLength; delete c.loopStart; return c;
+}
+function arrToSlotClip(c) {
+  const s = JSON.parse(JSON.stringify(c)); delete s.id; delete s.start; delete s.offset; delete s.duration;
+  if (c.type === 'midi') { s.lengthBeats = c.lengthBeats || Math.max(1, Math.round(c.duration / engine.beatDur)); }
+  else { s.loopStart = c.offset || 0; s.loopLength = c.duration * clipRate(c); }
+  return s;
+}
+function newTrackFor(isMidi, name) {
+  const t = newTrack(S.project, name || null, isMidi ? 'midi' : 'audio', 'synth');
+  if (isMidi) { t.instrument = 'keys'; t.instrumentSource = 'manual'; }
+  S.project.tracks.push(t); engine.addTrack(t); return t;
+}
+function stopSlotIfPlaying(t, i) { const n = engine.tracks.get(t.id); if (n && n.sessionSlot === i) engine.stopTrackClip(t); }
+// src: {kind:'arr', t, c} | {kind:'slot', t, i}; dst: {kind:'arr', trackId|null, pos} | {kind:'slot', trackId|null, slot}
+function placeClip(src, dst, { copy = false } = {}) {
+  const clip = src.kind === 'arr' ? src.c : src.t.slots[src.i]; if (!clip) return false;
+  const isMidi = clip.type === 'midi';
+  let t = dst.trackId ? track(dst.trackId) : null;
+  if (t && (t.kind === 'group' || (t.kind === 'midi') !== isMidi)) { toast(isMidi ? 'MIDI clips go on MIDI tracks — placed on a new track' : 'Audio clips go on audio tracks — placed on a new track', 2200); t = null; }
+  if (dst.kind === 'slot' && src.kind === 'slot' && t === src.t && dst.slot === src.i) return false;
+  history.push(copy ? 'Copy clip' : 'Move clip');
+  if (!t) t = newTrackFor(isMidi, (clip.name || '').slice(0, 24) || null);
+  // remove from source (move)
+  if (!copy) {
+    if (src.kind === 'arr') { src.t.arrangement = src.t.arrangement.filter((x) => x !== clip); if (src.t !== t) engine.rescheduleTrack(src.t); }
+    else { stopSlotIfPlaying(src.t, src.i); src.t.slots[src.i] = null; }
+  }
+  if (dst.kind === 'arr') {
+    let c;
+    if (src.kind === 'arr') { c = copy ? { ...JSON.parse(JSON.stringify(clip)), id: uid('c') } : clip; c.start = Math.max(0, dst.pos); }
+    else c = slotToArrClip(clip, Math.max(0, dst.pos));
+    t.arrangement.push(c); trimUnder(t, c); engine.rescheduleTrack(t);
+    S.sel = { kind: 'arr', trackId: t.id, clipId: c.id };
+  } else {
+    while (t.slots.length <= dst.slot) t.slots.push(null);
+    stopSlotIfPlaying(t, dst.slot);
+    t.slots[dst.slot] = src.kind === 'slot' ? (copy ? JSON.parse(JSON.stringify(clip)) : clip) : arrToSlotClip(clip);
+    if (dst.slot >= S.project.scenes) S.project.scenes = dst.slot + 1;
+    S.sel = { kind: 'slot', trackId: t.id, slot: dst.slot };
+  }
+  S.selected = t.id; markDirty(); renderAll();
+  return true;
+}
+// ---- drop-target hit testing shared by pointer drags and file drops
+function dropTargetAt(x, y, grabSec = 0, ev = null) {
+  const els = document.elementsFromPoint(x, y);
+  const viewBtn = els.find((e) => e.matches && e.matches('.views button[data-view]'));
+  if (viewBtn) return { kind: 'view', view: viewBtn.dataset.view, el: viewBtn };
+  const lane = els.find((e) => e.classList && e.classList.contains('lane'));
+  if (lane) {
+    const content = lane.closest('.arr-content') || lane.parentElement; const r = content.getBoundingClientRect();
+    return { kind: 'arr', trackId: lane.dataset.id || null, pos: snapPos((x - r.left) / S.zoom - grabSec, ev), lane };
+  }
+  const slot = els.find((e) => e.classList && e.classList.contains('slot') && !e.classList.contains('scene') && e.dataset.slot != null);
+  if (slot) { const col = slot.closest('.col[data-id]'); if (col && !col.classList.contains('group')) return { kind: 'slot', trackId: col.dataset.id, slot: +slot.dataset.slot, el: slot }; }
+  if (els.some((e) => e.classList && (e.classList.contains('session-grid') || e.classList.contains('add-col')))) {
+    const firstSlot = document.querySelector('#sessionView .col[data-id] .slot'); let row = 0;
+    if (firstSlot) { const r = firstSlot.getBoundingClientRect(); row = Math.max(0, Math.min(S.project.scenes - 1, Math.floor((y - r.top) / r.height))); }
+    return { kind: 'slot', trackId: null, slot: row, el: null };
+  }
+  return null;
+}
+// ---- pointer drag of a clip (arrangement or session), across tracks and across views (hover the view tab)
+function startClipDrag(src, e, el, { onStart } = {}) {
+  if (e.button > 0) return;
+  const sx = e.clientX, sy = e.clientY; let moved = false, ghost = null, tgt = null, viewTimer = null, hl = null;
+  const clip = src.kind === 'arr' ? src.c : src.t.slots[src.i];
+  const er = el.getBoundingClientRect();
+  const grabSec = src.kind === 'arr' ? (sx - er.left) / S.zoom : 0;
+  const durPx = () => Math.max(24, (src.kind === 'arr' ? clip.duration : slotToArrClip(clip, 0).duration) * S.zoom);
+  const color = src.t.color;
+  const onMove = (ev) => {
+    if (!moved) { if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6) return; moved = true; if (onStart) onStart(); el.classList.add('dragging'); document.body.classList.add('clip-dragging');
+      ghost = h('div', { class: 'clip-ghost', style: { '--c': color } }, h('span', {}, clip.name || 'Clip')); document.body.append(ghost); }
+    ev.preventDefault();
+    tgt = dropTargetAt(ev.clientX, ev.clientY, grabSec, ev);
+    if (hl) { hl.classList.remove('drop-target'); hl = null; }
+    clearTimeout(viewTimer); viewTimer = null;
+    if (tgt && tgt.kind === 'view') { const v = tgt.view; if (v !== S.view) viewTimer = setTimeout(() => { setView(v); haptic(10); }, 450); tgt = null; }
+    if (tgt && tgt.kind === 'arr') {
+      const content = tgt.lane.closest('.arr-content') || tgt.lane.parentElement; const cr = content.getBoundingClientRect(), lr = tgt.lane.getBoundingClientRect();
+      Object.assign(ghost.style, { left: cr.left + tgt.pos * S.zoom + 'px', top: lr.top + 2 + 'px', width: durPx() + 'px', height: Math.max(20, lr.height - 4) + 'px' });
+      ghost.classList.toggle('new', !tgt.trackId); ghost.classList.remove('slotg');
+      ghost.dataset.pos = tgt.pos.toFixed(4);
+    } else if (tgt && tgt.kind === 'slot') {
+      if (tgt.el) { hl = tgt.el; hl.classList.add('drop-target'); const r = hl.getBoundingClientRect(); Object.assign(ghost.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' }); }
+      else Object.assign(ghost.style, { left: ev.clientX - 50 + 'px', top: ev.clientY - 14 + 'px', width: '100px', height: '28px' });
+      ghost.classList.add('slotg'); ghost.classList.toggle('new', !tgt.trackId);
+    } else if (ghost) Object.assign(ghost.style, { left: ev.clientX - 50 + 'px', top: ev.clientY - 14 + 'px', width: '100px', height: '28px' });
+  };
+  const onUp = (ev) => {
+    window.removeEventListener('pointermove', onMove, true); window.removeEventListener('pointerup', onUp, true); window.removeEventListener('pointercancel', onCancel, true);
+    clearTimeout(viewTimer); if (hl) hl.classList.remove('drop-target'); if (ghost) ghost.remove();
+    el.classList.remove('dragging'); document.body.classList.remove('clip-dragging');
+    if (!moved) return;
+    if (el.setAttribute) el._dragMoved = true;
+    if (tgt && (tgt.kind === 'arr' || tgt.kind === 'slot')) placeClip(src, tgt, { copy: ev.ctrlKey || ev.metaKey });
+  };
+  const onCancel = () => { moved = moved && false; onUp({}); };
+  window.addEventListener('pointermove', onMove, true); window.addEventListener('pointerup', onUp, true); window.addEventListener('pointercancel', onCancel, true);
+}
+// ---- "pick up & place" (touch friendly; also works across views and in phone mode)
+function pickUp(src) {
+  const clip = src.kind === 'arr' ? src.c : src.t.slots[src.i]; if (!clip) return;
+  S.carry = { src, target: null }; haptic(20); closeMenus();
+  renderCarryBar();
+  toast('Picked up — tap a track position or a slot, then “Place here”', 2600);
+}
+function renderCarryBar() {
+  $$('.carry-bar').forEach((e) => e.remove()); $$('.carry-mark').forEach((e) => e.remove());
+  if (!S.carry) { document.body.classList.remove('carrying'); return; }
+  document.body.classList.add('carrying');
+  const { src, target } = S.carry; const clip = src.kind === 'arr' ? src.c : src.t.slots[src.i];
+  const where = !target ? 'Tap where it should go' : target.kind === 'arr' ? `${target.trackId ? track(target.trackId).name : 'New track'} · ${fmtPos(target.pos)}` : `${target.trackId ? track(target.trackId).name : 'New track'} · slot ${target.slot + 1}`;
+  const bar = h('div', { class: 'carry-bar', role: 'status' },
+    h('span', { class: 'carry-name', style: { '--c': src.t.color } }, '✋ ' + (clip ? clip.name || 'Clip' : 'Clip')), h('span', { class: 'carry-where' }, where),
+    h('button', { class: 'primary carry-place', disabled: !target, onclick: () => { const c = S.carry; S.carry = null; renderCarryBar(); if (c && c.target) placeClip(c.src, c.target); } }, 'Place here'),
+    h('button', { class: 'carry-cancel', onclick: () => { S.carry = null; renderCarryBar(); } }, 'Cancel'));
+  document.body.append(bar);
+  if (target && target.kind === 'arr' && target.lane && target.lane.isConnected) {
+    const content = target.lane.closest('.arr-content'); if (content) content.append(h('div', { class: 'carry-mark', style: { left: target.pos * S.zoom + 'px', top: target.lane.offsetTop + 'px', height: target.lane.offsetHeight + 'px' } }));
+  }
+  if (target && target.kind === 'slot' && target.el && target.el.isConnected) target.el.classList.add('drop-target');
+}
+// while carrying, taps on lanes/slots choose the target instead of their normal action
+document.addEventListener('click', (e) => {
+  if (!S.carry || e.target.closest('.carry-bar, .views, #menu, .ctx-menu, dialog')) return;
+  const t = dropTargetAt(e.clientX, e.clientY, 0, e); if (!t || t.kind === 'view') return;
+  e.preventDefault(); e.stopPropagation();
+  $$('.drop-target').forEach((x) => x.classList.remove('drop-target'));
+  S.carry.target = t; haptic(8); renderCarryBar();
+}, true);
+// ---- file drops onto session slots / empty session space
+async function importAudioToSlot(files, trackId, slot) {
+  let t = trackId ? track(trackId) : null; if (t && t.kind !== 'audio') t = null;
+  let n = 0; const bufs = [];
+  for (const f of files) { try { bufs.push([f, await decodeFile(f)]); } catch (e) { toast(`Could not decode ${f.name}: ${e.message || e}`); } }
+  if (!bufs.length) return 0;
+  history.push('Import audio');
+  if (!t) t = newTrackFor(false, bufs[0][0].name.replace(/\.[^.]+$/, '').slice(0, 24));
+  for (const [f, buf] of bufs) {
+    const i = slot + n; while (t.slots.length <= i) t.slots.push(null); if (i >= S.project.scenes) S.project.scenes = i + 1;
+    stopSlotIfPlaying(t, i);
+    t.slots[i] = { bufferId: addBuffer(buf), name: f.name.replace(/\.[^.]+$/, '').slice(0, 32), loopLength: buf.duration }; n++;
+  }
+  S.sel = { kind: 'slot', trackId: t.id, slot }; S.selected = t.id; markDirty(); renderAll();
+  toast(`Placed ${n} file(s) in ${t.name}, slot ${slot + 1}${n > 1 ? '…' + (slot + n) : ''}`);
+  return n;
+}
+const isAudioFile = (f) => f.type.startsWith('audio/') || /\.(wav|mp3|ogg|oga|flac|m4a|aac|webm|opus|aif|aiff)$/i.test(f.name);
+function bindSessionDrop(root) {
+  root.addEventListener('dragover', (e) => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy';
+    $$('.drop-target').forEach((x) => x.classList.remove('drop-target')); const t = dropTargetAt(e.clientX, e.clientY); if (t && t.el) t.el.classList.add('drop-target'); } });
+  root.addEventListener('dragleave', () => $$('.drop-target').forEach((x) => x.classList.remove('drop-target')));
+  root.addEventListener('drop', async (e) => {
+    $$('.drop-target').forEach((x) => x.classList.remove('drop-target'));
+    const files = [...(e.dataTransfer?.files || [])]; if (!files.length) return;
+    e.preventDefault(); e.stopPropagation();
+    const proj = files.find((f) => /\.(webdaw|zip|json|enc)$/i.test(f.name)); if (proj) return importProject(proj);
+    const audio = files.filter(isAudioFile); if (!audio.length) return toast('Drop audio files (wav, mp3, ogg, flac, m4a…)');
+    await engine.resume();
+    const t = dropTargetAt(e.clientX, e.clientY);
+    await importAudioToSlot(audio, t && t.kind === 'slot' ? t.trackId : null, t && t.kind === 'slot' ? t.slot : 0);
+  });
+}
+
 // ------------------------------------------------------------------ device panel (compact cards, expand on demand)
-const FX_COLORS = { pitch: '#3ecf8e', eq: '#ffa529', compressor: '#4a9cff', maximizer: '#8a7dff', limiter: '#d36bff', distortion: '#ff764d', delay: '#2fc6d6', reverb: '#9bd44a' };
+const FX_COLORS = { pitch: '#3ecf8e', eq: '#8B5CF6', compressor: '#4a9cff', maximizer: '#6366F1', limiter: '#d36bff', distortion: '#EF4444', amp: '#F43F5E', delay: '#2fc6d6', reverb: '#14B8A6', chorus: '#60A5FA', autopan: '#A78BFA', tremolo: '#ff5fa2', rack: '#9aa4ad' };
+
+// ------------------------------------------------------------------ clip detail view (Ableton-style, bottom panel)
+// Selecting an audio clip shows it here: large zoomable waveform, start/end (or loop) markers, gain,
+// transpose (repitch), transient markers (the same detector Quantize uses) and the beat grid.
+S.bottom = 'devices';
+function syncBottomToSelection() {
+  const key = S.sel ? JSON.stringify(S.sel) : '';
+  if (key === S._selKey) return; S._selKey = key;
+  const sc = selectedClip();
+  if (sc && sc.c && sc.c.type !== 'midi' && sc.c.bufferId) { S.bottom = 'clip'; S.selected = sc.t.id; S.clipView = null; renderDevices(); }
+  else if (S.bottom === 'clip') { S.bottom = 'devices'; renderDevices(); }
+}
+const transientCache = new WeakMap();
+function transientsOf(buf) { let r = transientCache.get(buf); if (!r) { r = detectTransients(mixToMono(buf), buf.sampleRate).map((i) => i / buf.sampleRate); transientCache.set(buf, r); } return r; }
+function bottomTabs(active) {
+  const sc = selectedClip(); const canClip = sc && sc.c && sc.c.type !== 'midi' && sc.c.bufferId;
+  return h('span', { class: 'bottom-tabs', role: 'tablist' },
+    h('button', { class: 'small' + (active === 'clip' ? ' on' : ''), role: 'tab', disabled: !canClip, title: canClip ? 'Clip detail: waveform, markers, gain, transpose' : 'Select an audio clip to see its details', onclick: () => { S.bottom = 'clip'; renderDevices(); } }, 'Clip'),
+    h('button', { class: 'small' + (active === 'devices' ? ' on' : ''), role: 'tab', title: 'Effects and instrument of the selected track', onclick: () => { S.bottom = 'devices'; renderDevices(); } }, 'Devices'));
+}
+function renderClipDetail(head, panel, sc) {
+  const { t, c } = sc; const isArr = S.sel.kind === 'arr'; const buf = engine.buffers.get(c.bufferId);
+  head.append(bottomTabs('clip'), h('span', { class: 'dev-title', style: { '--c': t.color } }, (c.name || 'Clip') + ' · ' + t.name));
+  if (!buf) { panel.append(h('p', { class: 'hint' }, 'Audio not loaded.')); return; }
+  const V = S.clipView && S.clipView.id === (c.id || c.bufferId) ? S.clipView : (S.clipView = { id: c.id || c.bufferId, v0: 0, v1: buf.duration, tr: prefs.showTransients !== false });
+  const rate = () => Math.pow(2, (c.transpose || 0) / 12);
+  const region = () => isArr ? [c.offset || 0, (c.offset || 0) + c.duration * rate()] : [c.loopStart || 0, (c.loopStart || 0) + (c.loopLength || buf.duration)];
+  const live = (what) => { engine.updateClipLive(t, c, what); markDirty(); if (S.view === 'arrange') scheduleClipRedraw(); };
+  const trBtn = h('button', { class: 'small' + (V.tr ? ' on' : ''), title: 'Show transient markers (the hits Quantize moves onto the grid)', onclick: () => { V.tr = !V.tr; prefs.showTransients = V.tr; savePrefs(); trBtn.classList.toggle('on', V.tr); draw(); } }, 'Transients');
+  head.append(trBtn,
+    h('button', { class: 'small', title: 'Quantize: move the hits onto the beat grid', onclick: () => quantizeDialog() }, 'Quantize…'),
+    h('button', { class: 'small', title: 'Detect this clip\'s tempo (BPM)', onclick: () => clipTempoDialog(t, c, isArr ? 'arr' : 'slot') }, 'BPM…', lockBadge('tempo.detect')),
+    h('button', { class: 'small', title: 'Zoom out', onclick: () => zoom(1.6) }, '−'), h('button', { class: 'small', title: 'Zoom in (or pinch / Ctrl+wheel)', onclick: () => zoom(1 / 1.6) }, '+'),
+    h('button', { class: 'small', title: 'Show the whole sample', onclick: () => { V.v0 = 0; V.v1 = buf.duration; draw(); } }, 'Fit'),
+    h('button', { class: 'collapse small', onclick: () => { $('#devicePanel').classList.toggle('collapsed'); }, title: 'Show/hide the panel' }, '▾'));
+  const ctrls = h('div', { class: 'clip-ctrls' });
+  const gainK = createKnob({ key: 'gain', label: 'Gain', min: -24, max: 24, def: 0, unit: 'dB', help: 'Clip volume' }, c.gain || 0, (v) => { history.push('Clip gain', 'cg' + (c.id || c.bufferId)); c.gain = v; live('gain'); draw(); });
+  const st = Math.round(c.transpose || 0), ct = Math.round(((c.transpose || 0) - st) * 100);
+  const trK = createKnob({ key: 'transpose', label: 'Transpose', min: -24, max: 24, def: 0, step: 1, unit: 'st', help: 'Repitch in semitones (pitch and speed change together, like a tape)' }, st, (v) => { history.push('Transpose', 'tp' + (c.id || c.bufferId)); c.transpose = Math.round(v) + (Math.round(((c.transpose || 0) - Math.round(c.transpose || 0)) * 100)) / 100; live('transpose'); draw(); });
+  const dtK = createKnob({ key: 'detune', label: 'Detune', min: -50, max: 50, def: 0, step: 1, unit: 'ct', help: 'Fine repitch in cents' }, ct, (v) => { history.push('Detune', 'dt' + (c.id || c.bufferId)); c.transpose = Math.round(c.transpose || 0) + Math.round(v) / 100; live('transpose'); draw(); });
+  const info = h('div', { class: 'clip-info hint' });
+  ctrls.append(gainK, trK, dtK, info);
+  const wrap = h('div', { class: 'clip-wave-wrap' });
+  const wave = h('canvas', { class: 'clip-wave' }), over = h('canvas', { class: 'clip-over' });
+  wrap.append(wave, over);
+  panel.append(h('div', { class: 'clip-detail' }, ctrls, wrap));
+  function zoom(f, at = 0.5) { const span = V.v1 - V.v0, c0 = V.v0 + span * at; const ns = Math.max(0.005, Math.min(buf.duration, span * f)); V.v0 = Math.max(0, Math.min(buf.duration - ns, c0 - ns * at)); V.v1 = V.v0 + ns; draw(); }
+  const tx = (sec) => (sec - V.v0) / (V.v1 - V.v0) * wrap.clientWidth;
+  const sx = (x) => V.v0 + x / Math.max(1, wrap.clientWidth) * (V.v1 - V.v0);
+  function draw() {
+    if (!wrap.isConnected) return;
+    drawWaveform(wave, buf, { startSec: V.v0, endSec: V.v1, color: t.color, bg: '#101013', gain: dbToGain(c.gain) });
+    const dpr = devicePixelRatio || 1, w = Math.round(wrap.clientWidth * dpr), hh = Math.round(wrap.clientHeight * dpr);
+    if (over.width !== w) over.width = w; if (over.height !== hh) over.height = hh;
+    const g = over.getContext('2d'); g.clearRect(0, 0, w, hh); g.save(); g.scale(dpr, dpr);
+    const W = wrap.clientWidth, H = wrap.clientHeight, [a, b] = region();
+    // beat grid (project tempo, relative to the region start as it sits on the timeline)
+    const beatBuf = engine.beatDur * rate(); const bpb = S.project.beatsPerBar || 4;
+    if ((V.v1 - V.v0) / beatBuf < 400) for (let k = Math.floor((V.v0 - a) / beatBuf); a + k * beatBuf < V.v1; k++) { const x = tx(a + k * beatBuf); g.fillStyle = k % bpb === 0 ? 'rgba(255,255,255,.16)' : 'rgba(255,255,255,.06)'; g.fillRect(Math.round(x), 0, 1, H); }
+    // outside the played region
+    g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(0, 0, Math.max(0, tx(a)), H); g.fillRect(tx(b), 0, W, H);
+    if (V.tr) { g.fillStyle = 'rgba(221,214,254,.75)'; for (const s of transientsOf(buf)) { if (s < V.v0 || s > V.v1) continue; const x = tx(s); g.fillRect(Math.round(x), 0, 1, H); g.beginPath(); g.moveTo(x - 4, 0); g.lineTo(x + 4, 0); g.lineTo(x, 6); g.fill(); } }
+    const flag = (x, col, label, right) => { g.fillStyle = col; g.fillRect(Math.round(x) - 1, 0, 2, H); g.beginPath(); if (right) { g.moveTo(x, 0); g.lineTo(x - 12, 0); g.lineTo(x, 12); } else { g.moveTo(x, 0); g.lineTo(x + 12, 0); g.lineTo(x, 12); } g.fill(); g.font = '10px sans-serif'; g.fillText(label, right ? x - 34 : x + 14, 10); };
+    flag(tx(a), '#A78BFA', isArr ? 'Start' : 'Loop', false); flag(tx(b), '#EF4444', isArr ? 'End' : 'Loop end', true);
+    // playhead
+    const n = engine.tracks.get(t.id); let ph = null;
+    if (engine.playing) {
+      if (isArr) { const p = engine.position(); if (p >= c.start && p < c.start + c.duration) ph = (c.offset || 0) + (p - c.start) * rate(); }
+      else if (n && n.sessionSource && n.sessionSource._clip === c) { const L = b - a, el = (engine.ctx.currentTime - n.sessionStart) * rate(); if (el >= 0) ph = a + (el % L); }
+    }
+    if (ph != null && ph >= V.v0 && ph <= V.v1) { g.fillStyle = '#fff'; g.fillRect(Math.round(tx(ph)), 0, 1.5, H); }
+    g.restore();
+    info.textContent = `${isArr ? 'Start' : 'Loop'} ${a.toFixed(3)} s · ${isArr ? 'End' : 'Length'} ${(isArr ? b : b - a).toFixed(3)} s · ${buf.numberOfChannels > 1 ? 'Stereo' : 'Mono'} ${Math.round(buf.sampleRate / 100) / 10} kHz${c.bpm ? ' · ' + c.bpm + ' BPM' : ''}${c.transpose ? ' · repitch ' + (c.transpose > 0 ? '+' : '') + c.transpose.toFixed(2) + ' st' : ''}`;
+  }
+  V.draw = draw;
+  // interaction: drag markers, pan, wheel/pinch zoom, double-tap = fit
+  const pts = new Map(); let drag = null, pinch = null, lastTap = 0;
+  over.addEventListener('pointerdown', (e) => {
+    over.setPointerCapture(e.pointerId); pts.set(e.pointerId, e.offsetX);
+    if (pts.size === 2) { const [p1, p2] = [...pts.values()]; pinch = { d: Math.abs(p1 - p2) || 1, v0: V.v0, v1: V.v1, mid: sx((p1 + p2) / 2) }; drag = null; return; }
+    const [a, b] = region(), x = e.offsetX;
+    if (Date.now() - lastTap < 300) { V.v0 = 0; V.v1 = buf.duration; draw(); lastTap = 0; return; } lastTap = Date.now();
+    if (Math.abs(x - tx(a)) < 10) drag = { m: 'start' }; else if (Math.abs(x - tx(b)) < 10) drag = { m: 'end' };
+    else drag = { m: 'pan', x, v0: V.v0, v1: V.v1 };
+    if (drag.m !== 'pan') history.push(isArr ? 'Clip markers' : 'Loop markers', 'mk' + (c.id || c.bufferId));
+  });
+  over.addEventListener('pointermove', (e) => {
+    if (!pts.has(e.pointerId)) { const [a, b] = region(); over.style.cursor = Math.abs(e.offsetX - tx(a)) < 10 || Math.abs(e.offsetX - tx(b)) < 10 ? 'ew-resize' : 'grab'; return; }
+    pts.set(e.pointerId, e.offsetX);
+    if (pinch && pts.size === 2) { const [p1, p2] = [...pts.values()]; const f = pinch.d / (Math.abs(p1 - p2) || 1); const span = Math.max(0.005, Math.min(buf.duration, (pinch.v1 - pinch.v0) * f)); V.v0 = Math.max(0, Math.min(buf.duration - span, pinch.mid - span / 2)); V.v1 = V.v0 + span; draw(); return; }
+    if (!drag) return;
+    const sec = Math.max(0, Math.min(buf.duration, sx(e.offsetX)));
+    if (drag.m === 'pan') { const d = (e.offsetX - drag.x) / wrap.clientWidth * (drag.v1 - drag.v0); const span = drag.v1 - drag.v0; V.v0 = Math.max(0, Math.min(buf.duration - span, drag.v0 - d)); V.v1 = V.v0 + span; draw(); return; }
+    const r = rate();
+    if (isArr) {
+      if (drag.m === 'start') { const end = (c.offset || 0) + c.duration * r; const ns = Math.min(sec, end - 0.01); const dOff = ns - (c.offset || 0); c.start = Math.max(0, c.start + dOff / r); c.offset = ns; c.duration = (end - ns) / r; }
+      else { const ne = Math.max(sec, (c.offset || 0) + 0.01); c.duration = (ne - (c.offset || 0)) / r; }
+      engine.rescheduleTrack(t); if (S.view === 'arrange') { const el = $(`#arrangeView .aclip[data-clip="${c.id}"]`); if (el) { el.style.left = c.start * S.zoom + 'px'; el.style.width = Math.max(4, c.duration * S.zoom) + 'px'; drawArrClip(el); } }
+    } else {
+      if (drag.m === 'start') { const end = (c.loopStart || 0) + (c.loopLength || buf.duration); const ns = Math.min(sec, end - 0.01); c.loopStart = ns; c.loopLength = end - ns; }
+      else { c.loopLength = Math.max(0.01, sec - (c.loopStart || 0)); }
+      live('loop');
+    }
+    markDirty(); draw();
+  });
+  const up = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (drag && drag.m !== 'pan' && !isArr) renderSession(); drag = null; };
+  over.addEventListener('pointerup', up); over.addEventListener('pointercancel', up);
+  over.addEventListener('wheel', (e) => { e.preventDefault(); if (e.ctrlKey || e.metaKey || !e.shiftKey) zoom(e.deltaY > 0 ? 1.25 : 0.8, e.offsetX / wrap.clientWidth); else { const span = V.v1 - V.v0, d = e.deltaY / wrap.clientWidth * span; V.v0 = Math.max(0, Math.min(buf.duration - span, V.v0 + d)); V.v1 = V.v0 + span; draw(); } }, { passive: false });
+  new ResizeObserver(() => draw()).observe(wrap);
+  requestAnimationFrame(draw);
+}
+
 function renderDevices() {
   const panel = $('#devices'); panel.innerHTML = '';
   const isMaster = S.selected === 'master';
   const t = isMaster ? null : track(S.selected);
   const head = $('#devHead'); head.innerHTML = '';
   if (!isMaster && !t) return;
+  if (S.bottom === 'clip') { const sc = selectedClip(); if (sc && sc.c && sc.c.type !== 'midi' && sc.c.bufferId) { $('#devicePanel').classList.add('clip-mode'); return renderClipDetail(head, panel, sc); } S.bottom = 'devices'; }
+  $('#devicePanel').classList.remove('clip-mode');
+  head.append(bottomTabs('devices'));
   const tid = isMaster ? 'master' : t.id;
   const fxList = isMaster ? S.project.master.fx : t.fx;
   head.append(h('span', { class: 'dev-title', style: { '--c': isMaster ? '#bbb' : t.color }, title: 'Devices of the selected track' }, isMaster ? 'Master' : t.name));
@@ -1082,7 +1545,7 @@ function selectParam(p, value, onChange) {
   $('select', s).value = value; return s;
 }
 function deviceCard(tid, fxList, d, idx, inst, t) {
-  const C = EFFECT_TYPES[d.type]; const color = FX_COLORS[d.type] || '#ffa529';
+  const C = EFFECT_TYPES[d.type]; const color = FX_COLORS[d.type] || '#8B5CF6';
   const ekey = `${tid}:${idx}:${d.type}`; const expanded = S.expanded.has(ekey);
   const rebuild = (label, mut) => { change(label, () => { mut(); tid === 'master' ? engine.setMasterFx(fxList) : engine.setTrackFx(t); }); renderDevices(); };
   const card = h('div', { class: 'device' + (d.enabled === false ? ' off' : '') + (expanded ? ' expanded' : ''), 'data-type': d.type, style: { '--fx': color }, title: EFFECT_HELP[d.type] || C.label });
@@ -1148,7 +1611,7 @@ function adaptiveCard(t) {
     st.textContent = A.status;
     g.clearRect(0, 0, w, hh); const bw = w / BANDS.length;
     g.strokeStyle = '#ffffff22'; g.beginPath(); g.moveTo(0, hh / 2); g.lineTo(w, hh / 2); g.stroke();
-    A.gains.forEach((v, i) => { const y = (v / 6) * (hh / 2) * 0.9; g.fillStyle = v >= 0 ? '#3ecf8e' : '#ff764d'; g.fillRect(i * bw + bw * 0.2, hh / 2 - Math.max(0, y), bw * 0.6, Math.abs(y) || 1);
+    A.gains.forEach((v, i) => { const y = (v / 6) * (hh / 2) * 0.9; g.fillStyle = v >= 0 ? '#3ecf8e' : '#EF4444'; g.fillRect(i * bw + bw * 0.2, hh / 2 - Math.max(0, y), bw * 0.6, Math.abs(y) || 1);
       g.fillStyle = '#9aa4ad'; g.font = `${9 * devicePixelRatio}px sans-serif`; g.fillText(BANDS[i].name.slice(0, 5), i * bw + 2, hh - 2); });
   });
   card.append(h('div', { class: 'dev-bar' }, h('button', { class: 'pwr on', title: 'Turn adaptive off', onclick: () => { change('Adaptive', () => { t.adaptive.enabled = false; engine.syncAdaptive(t); }); renderDevices(); } }, '⏻'), h('span', { class: 'dev-name' }, 'Adaptive · ' + INSTRUMENT_LABELS[t.instrument || 'other'])),
@@ -1459,7 +1922,7 @@ function quantizeDialog() {
     const res = quantizeBuffer(engine.ctx, buf, { clipStartSec: isArr ? c.start : 0, offsetSec: isArr ? c.offset || 0 : 0, gridSec: g * engine.beatDur, strength: s, sensitivity: +sens.value });
     if (!res.moved) return toast(`No hits needed moving (${res.onsets.length} transients found).`);
     change('Quantize audio', () => { c.bufferId = addBuffer(res.buffer); if (isArr) engine.rescheduleTrack(t); });
-    toast(`Quantized: moved ${res.moved} of ${res.onsets.length} hits.`); renderAll();
+    toast(`Quantized ${res.onsets.length} hits (largest shift ${Math.round(res.moved * 1000)} ms).`); renderAll();
   }, { once: true });
 }
 
@@ -1540,13 +2003,16 @@ function prefsDialog() {
   openDialog('Preferences', h('div', { class: 'settings' },
     chk('easy', 'Easy Mode (fewer controls, bigger labels)', 'Hides advanced controls and enlarges text and touch targets'),
     chk('hc', 'High contrast', 'Stronger colours and outlines'),
+    h('label', { class: 'chk', title: 'Simple one-screen-at-a-time layout for phones' }, 'Phone layout ',
+      h('select', { id: 'phoneModeSel', onchange: (e) => { prefs.phoneMode = e.target.value; savePrefs(); closeDialog(); applyPhoneMode(); } },
+        [['auto', 'Automatic (small or touch screens)'], ['on', 'Always simple phone layout'], ['off', 'Always full layout']].map(([v, l]) => h('option', { value: v, selected: (prefs.phoneMode || 'auto') === v }, l)))),
     chk('haptics', 'Haptic feedback (vibration)', 'Vibrates on knob detents and button presses where supported (not on iPhone/iPad Safari)'),
     h('fieldset', {}, h('legend', {}, 'Auto-record when sound starts (AUTO button)'), h('label', {}, 'Threshold (dBFS) ', thr), h('label', {}, 'Pre-roll (s) ', pre)),
     h('fieldset', {}, h('legend', {}, 'PIN lock'), pinRow),
     h('fieldset', { class: 'tier-set' }, h('legend', {}, 'Tier (placeholder)'),
       h('select', { id: 'tierSel', onchange: (e) => { setTier(e.target.value); toast('Tier: ' + TIER_LABELS[e.target.value]); } }, TIERS.map((x) => h('option', { value: x, selected: x === getTier() }, TIER_LABELS[x]))),
       h('p', { class: 'hint' }, 'Placeholder only — no payments, accounts or licence checks. Every tier can be switched to freely for testing. Features above your tier show a 🔒 badge; existing projects keep playing.')),
-    h('button', { type: 'button', onclick: () => { closeDialog(); prefs.guideDone = false; savePrefs(); showGuide(); } }, 'Show the quick guide again')));
+    h('button', { type: 'button', onclick: () => { closeDialog(); startTutorial(); } }, 'Replay the tutorial')));
 }
 function applyPrefs() {
   document.body.classList.toggle('easy', !!prefs.easy);
@@ -1557,28 +2023,35 @@ function toggleEasy() { prefs.easy = !prefs.easy; savePrefs(); applyPrefs(); toa
 let helpMode = false;
 function toggleHelp() {
   helpMode = !helpMode; document.body.classList.toggle('helpmode', helpMode); $('#btnHelp').classList.toggle('on', helpMode);
-  if (helpMode) toast('Help mode: tap anything to see what it does. Tap ? again to exit.', 3000);
+  $$('.help-bar').forEach((e) => e.remove());
+  if (helpMode) document.body.append(h('div', { class: 'help-bar', role: 'status' }, h('span', {}, 'Help mode: tap anything to see what it does.'),
+    h('button', { class: 'small primary', onclick: () => { toggleHelp(); startTutorial(); } }, 'Replay tutorial'), h('button', { class: 'small', onclick: () => toggleHelp() }, 'Exit help')));
 }
 document.addEventListener('click', (e) => {
-  if (!helpMode || e.target.closest('#btnHelp')) return;
+  if (!helpMode || e.target.closest('#btnHelp, .help-bar')) return;
   const el = e.target.closest('[title], [data-help], [aria-label]'); if (!el) return;
   e.preventDefault(); e.stopPropagation(); showHelpBubble(el, e.clientX, e.clientY);
 }, true);
-const GUIDE = [
-  ['Welcome to WebDAW', 'A compact studio in your browser. This 5-step guide shows the basics. You can replay it from ☰ → Preferences.'],
-  ['Record', 'Tap ● on a track to arm it (the browser asks for the microphone). The small light shows input signal. Tap an empty slot to record a loop, or the top ● for the timeline. AUTO starts recording when you begin playing.'],
-  ['Play instruments', 'Add “+ Synth” or “+ Drums” tracks. Play with the on-screen keys/pads or a MIDI keyboard; double-tap a MIDI clip to edit notes.'],
-  ['Mix', 'Tap Auto-Mix to tell the app what each track is — it sets EQ, compression and effects. Effects are small cards; tap ▾ to expand. Everything can be changed while playing and undone (↶).'],
-  ['Help', 'Tap ? then any control for an explanation. “Easy” shows fewer, bigger controls. Your work saves automatically in this browser.'],
+// ------------------------------------------------------------------ interactive tutorial (replaces the v0.2 guide)
+const tutorial = createTutorial();
+const PHONE_STEPS = [
+  { target: '#startBtn', text: 'Tap here to turn on the sound.' },
+  { target: '.ph-add .ph-big, .ph-arm', text: 'Each voice or instrument gets its own track — add one here, or use the track you already have.', before: () => phone.show('tracks') },
+  { target: '.ph-recbtn', text: 'Tap the big red button to record, and tap it again to stop.', before: () => phone.show('record') },
+  { target: '.ph-automix', text: 'Auto-Mix sets up the sound of all your tracks for you.', before: () => phone.show('mix') },
+  { target: '.ph-addfx', text: 'Add an effect, like “Space” for a room sound or “Make it louder”.', before: () => phone.show('effects') },
+  { target: '.ph-save', text: 'Save your song or share it with someone here.', before: () => phone.show('more') },
 ];
-function showGuide(step = 0) {
-  $$('.guide').forEach((g) => g.remove());
-  if (step >= GUIDE.length) { prefs.guideDone = true; savePrefs(); return; }
-  const [title, text] = GUIDE[step];
-  const g = h('div', { class: 'guide', role: 'dialog', 'aria-label': title },
-    h('div', { class: 'guide-card' }, h('div', { class: 'guide-step' }, `${step + 1} / ${GUIDE.length}`), h('h3', {}, title), h('p', {}, text),
-      h('div', { class: 'dlg-btns' }, h('button', { onclick: () => { prefs.guideDone = true; savePrefs(); g.remove(); } }, 'Skip'), h('button', { class: 'primary', onclick: () => showGuide(step + 1) }, step === GUIDE.length - 1 ? 'Done' : 'Next'))));
-  document.body.append(g);
+const DESKTOP_STEPS = [
+  { target: '#startBtn', text: 'Click here to start the audio engine.' },
+  { target: '#btnRec', text: 'Arm a track with its ● button, then press Record (or R).' },
+  { target: '#btnAutoMix', text: 'Auto-Mix sets up EQ, compression and effects for every track.' },
+  { target: '#btnMenu', text: 'Save, export or share your project from this menu.' },
+];
+function startTutorial(fromStart = false) {
+  closeMenus(); if ($('#dlg').open) closeDialog();
+  const list = (phone && phone.active) || (!S.project && wantsPhone()) ? PHONE_STEPS : DESKTOP_STEPS;
+  tutorial.start(fromStart || !S.project ? list : list.slice(1));
 }
 function menuActions() {
   const items = [
@@ -1594,9 +2067,11 @@ function menuActions() {
     ['Visualizer (full screen)', () => openVisualizer(engine.ctx, engine.master.out)],
     ['Audio & MIDI settings…', audioSettings],
     ['Preferences…', prefsDialog],
+    ['Simple phone layout', () => { prefs.phoneMode = 'on'; savePrefs(); phone.setActive(true); }],
+    ['Tutorial', () => startTutorial()],
     ['-'],
     ['Install app', installApp],
-    ['About', () => openDialog('About WebDAW', h('div', {}, h('p', {}, 'WebDAW v0.2 — a browser DAW built on the Web Audio API. Works offline once loaded; makes no network requests besides loading itself. Projects are saved in this browser (IndexedDB); use Export/Import to move them.'),
+    ['About', () => openDialog('About WebDAW', h('div', {}, h('p', {}, 'WebDAW v0.3 — a browser DAW built on the Web Audio API. Works offline once loaded; makes no network requests besides loading itself. Projects are saved in this browser (IndexedDB); use Export/Import to move them.'),
       h('p', { class: 'hint' }, 'Shortcuts: Space play/stop · R record · M metronome · Tab switch view · Ctrl/⌘+Z undo · Ctrl/⌘+Shift+Z or Ctrl+Y redo · Ctrl/⌘+C/V/D copy/paste/duplicate · Delete remove clip · S split.')))],
   ];
   const m = $('#menu'); m.innerHTML = '';
@@ -1611,10 +2086,13 @@ async function installApp() {
 // ------------------------------------------------------------------ render loop
 function renderAll() {
   if (!S.project) return;
+  if (S.sel && S.sel.kind === 'arr' && S.sel.clipId && !selectedClip()) S.sel = null; // selection may point at a clip removed by undo/move
+  syncBottomToSelection();
   $('#sessionView').hidden = S.view !== 'session';
   $('#arrangeView').hidden = S.view !== 'arrange';
   $$('.views button').forEach((b) => b.classList.toggle('on', b.dataset.view === S.view));
   renderSession(); renderArrange(); renderDevices(); updateTransportUI(); updateKeyButton();
+  if (typeof phone !== 'undefined' && phone.active) phone.render();
 }
 const meterState = new WeakMap();
 function drawMeter(cv, id) {
@@ -1625,7 +2103,7 @@ function drawMeter(cv, id) {
   if (cv.width !== w || cv.height !== hh) { cv.width = w; cv.height = hh; }
   const g = cv.getContext('2d'); g.clearRect(0, 0, w, hh); g.fillStyle = '#0e0f11'; g.fillRect(0, 0, w, hh);
   let grad = cv._grad;
-  if (!grad || cv._gw !== w || cv._gh !== hh) { grad = horiz ? g.createLinearGradient(0, 0, w, 0) : g.createLinearGradient(0, hh, 0, 0); grad.addColorStop(0, '#2fb57a'); grad.addColorStop(0.7, '#3ecf8e'); grad.addColorStop(0.86, '#f2d33a'); grad.addColorStop(1, '#ff4d4d'); cv._grad = grad; cv._gw = w; cv._gh = hh; }
+  if (!grad || cv._gw !== w || cv._gh !== hh) { grad = horiz ? g.createLinearGradient(0, 0, w, 0) : g.createLinearGradient(0, hh, 0, 0); grad.addColorStop(0, '#2fb57a'); grad.addColorStop(0.7, '#3ecf8e'); grad.addColorStop(0.86, '#A855F7'); grad.addColorStop(1, '#ff4d4d'); cv._grad = grad; cv._gw = w; cv._gh = hh; }
   const now = performance.now();
   for (let c = 0; c < 2; c++) {
     const p = m.peak[c] || 0; st.v[c] = Math.max(p, st.v[c] * 0.88); // smooth fall
@@ -1637,6 +2115,46 @@ function drawMeter(cv, id) {
   }
 }
 let lastOv = 0;
+
+// ------------------------------------------------------------------ live waveforms while recording + master scope
+function liveTakes() {
+  // arrangement takes and session-slot audio recordings -> [{ tid, rec, kind, slot, startPos }]
+  const out = [];
+  if (engine.recording && engine.recTakes && S.liveRec) for (const k of engine.recTakes) out.push({ tid: k.t.id, rec: k.rec, kind: 'arr', startPos: S.liveRec.startPos });
+  for (const [id, n] of engine.tracks) if (n.rec && n.rec.rec) out.push({ tid: id, rec: n.rec.rec, kind: 'slot', slot: n.rec.slot, when: n.rec.when });
+  return out;
+}
+const livePeakMap = new Map();
+function livePeaksFor(key, rec) {
+  let L = livePeakMap.get(key); if (!L || L.rec !== rec) { L = { rec, lp: new LivePeaks(engine.ctx.sampleRate), used: 0 }; livePeakMap.set(key, L); }
+  const ch = rec.chunks || []; for (; L.used < ch.length; L.used++) if (ch[L.used] && ch[L.used][0]) L.lp.append(ch[L.used]);
+  return L.lp;
+}
+function drawLiveRecording() {
+  const takes = liveTakes(); if (!takes.length) { if (livePeakMap.size) { livePeakMap.clear(); $$('.rec-live').forEach((e) => e.remove()); } return; }
+  const pos = engine.position();
+  for (const k of takes) {
+    const t = track(k.tid); if (!t) continue; const lp = livePeaksFor(k.tid + ':' + k.kind, k.rec);
+    let host = null, left = 0, width = 0;
+    if (k.kind === 'arr' && S.view === 'arrange') { host = $(`#arrangeView .lane[data-id="${k.tid}"]`); left = k.startPos * S.zoom; width = Math.max(2, (pos - k.startPos) * S.zoom); }
+    else if (k.kind === 'slot' && S.view === 'session') host = $(`#sessionView .col[data-id="${k.tid}"] .slot[data-slot="${k.slot}"]`);
+    if (!host) continue;
+    let el = host.querySelector('.rec-live');
+    if (!el) { el = h('div', { class: 'rec-live', style: { '--c': t.color } }, h('span', { class: 'rec-live-label' }, '● REC'), h('canvas')); host.append(el); }
+    if (k.kind === 'arr') { el.style.left = left + 'px'; el.style.width = width + 'px'; }
+    // show the last few seconds scrolling in (session) or the whole take (arrangement)
+    const dur = lp.duration, cv = el.querySelector('canvas');
+    if (dur > 0.02) drawWaveform(cv, lp, k.kind === 'arr' ? { startSec: 0, endSec: Math.max(dur, (pos - k.startPos) || dur), color: '#EF4444', stereo: false } : { startSec: Math.max(0, dur - 4), endSec: Math.max(4, dur), color: '#EF4444', stereo: false });
+  }
+}
+let scopeBuf = null;
+function drawMasterScope() {
+  const cv = $('#masterScope'); if (!cv || !engine.scopeAn || !cv.offsetParent) return;
+  if (!scopeBuf) scopeBuf = new Float32Array(engine.scopeAn.fftSize);
+  drawScopeLine(cv, engine.scopeAn, scopeBuf);
+}
+
+let lastScope = 0, lastClipDraw = 0;
 function frame(ts) {
   requestAnimationFrame(frame);
   if (!S.project || document.hidden) return;
@@ -1645,6 +2163,9 @@ function frame(ts) {
   $('#posDisplay').textContent = fmtPos(pos);
   $$('canvas[data-meter]').forEach((cv) => { if (cv.offsetParent) drawMeter(cv, cv.dataset.meter); });
   drawMeter($('#masterMeterTop'), 'master');
+  if (ts - lastScope > 33) { lastScope = ts; drawMasterScope(); drawLiveRecording(); }
+  phone.frame(ts);
+  if (S.bottom === 'clip' && engine.playing && S.clipView && S.clipView.draw && ts - lastClipDraw > 66) { lastClipDraw = ts; S.clipView.draw(); }
   // input signal LEDs
   $$('.sig[data-sig]').forEach((el) => {
     const n = engine.tracks.get(el.dataset.sig); const db = n && n.inputChain ? n.inputLevel || -100 : -100;
@@ -1678,15 +2199,18 @@ function bindUI() {
   $('#btnRec').addEventListener('click', () => { haptic(14); toggleRecord(); });
   $('#btnAutoRec').addEventListener('click', () => { haptic(10); toggleAutoRecord(); });
   $('#btnMetro').addEventListener('click', () => { engine.metronome = !engine.metronome; engine.nextClick = null; updateTransportUI(); });
+  $('#btnTap').addEventListener('pointerdown', (e) => { e.preventDefault(); tapTempo(); });
+  $('#btnTap').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tapTempo(); } });
+  $('#btnTempo').addEventListener('click', (e) => { e.stopPropagation(); if (tempoPop) closeTempoPop(); else tempoPopover(e.currentTarget); });
   $('#btnUndo').addEventListener('click', undo); $('#btnRedo').addEventListener('click', redo);
   $('#btnEasy').addEventListener('click', toggleEasy);
   $('#btnHelp').addEventListener('click', toggleHelp);
   $('#btnAutoMix').addEventListener('click', () => autoMixDialog());
   $('#bpm').addEventListener('change', (e) => {
-    const v = Math.max(40, Math.min(300, +e.target.value || 120)); e.target.value = v;
+    const v = Math.round(Math.max(40, Math.min(300, +e.target.value || 120)) * 10) / 10; e.target.value = v;
     change('Tempo', () => { S.project.bpm = v; engine.updateBpmFx(); }); renderArrange();
   });
-  $$('.views button').forEach((b) => b.addEventListener('click', () => { S.view = b.dataset.view; renderAll(); }));
+  $$('.views button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
   $('#btnMenu').addEventListener('click', (e) => { e.stopPropagation(); const m = $('#menu'); const open = !m.classList.contains('open'); closeMenus(); if (open) { m.classList.add('open'); setTimeout(() => document.addEventListener('pointerdown', (ev) => { if (!ev.target.closest('#menu')) closeMenus(); }, { once: true }), 0); } });
   $('#fileProject').addEventListener('change', (e) => { if (e.target.files[0]) importProject(e.target.files[0]); e.target.value = ''; });
   $('#fileAudio').addEventListener('change', (e) => { if (e.target.files.length) importAudioFiles([...e.target.files]); e.target.value = ''; });
@@ -1704,10 +2228,11 @@ function bindUI() {
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
     else if (k === 'r') toggleRecord();
     else if (k === 'm') $('#btnMetro').click();
+    else if (k === 't') tapTempo();
     else if (k === 's') clipOp('split');
     else if (e.key === 'Tab') { e.preventDefault(); S.view = S.view === 'session' ? 'arrange' : 'session'; renderAll(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') { if (S.sel) { e.preventDefault(); clipOp('del'); } }
-    else if (e.key === 'Escape') { closeMenus(); if (helpMode) toggleHelp(); }
+    else if (e.key === 'Escape') { closeMenus(); if (helpMode) toggleHelp(); if (S.carry) { S.carry = null; renderCarryBar(); } }
   });
   // drag & drop outside the arrangement: projects or audio as new tracks
   document.addEventListener('dragover', (e) => e.preventDefault());
@@ -1752,15 +2277,30 @@ async function start() {
   }
   if (loaded) await loadProjectData(loaded.project, loaded.buffers); else await newProjectFlow(2);
   $('#startOverlay').remove();
+  phone.setActive(wantsPhone());
   requestAnimationFrame(frame);
   if (engine.ctx.state !== 'running') toast('Audio is suspended by the browser — tap anywhere to resume.', 5000);
-  if (!prefs.guideDone) showGuide();
 }
+
+// ------------------------------------------------------------------ phone mode
+async function saveAndShare() { await saveNow(); toast('Saved in this browser', 1200); await exportProject(); }
+const phone = createPhone({
+  S, engine, history, track, change, markDirty, renderAll, renderDevices, togglePlay, toggleRecord, toggleAutoRecord, toggleArm, addTrack, renameTrack,
+  autoMixDialog, gate, lockBadge, EFFECT_TYPES, EASY_PARAMS, EFFECT_HELP, setParam, fmtParam, fmtPos, undo, redo, tapTempo, tempoPopover, prefsDialog,
+  projectsDialog, saveAndShare, startTutorial, toggleHelp, updateTransportUI, liveTakes, livePeaksFor, placeClip, snapPos,
+});
+function applyPhoneMode() { const on = wantsPhone(); if (on !== phone.active) { phone.setActive(on); if (!on) renderAll(); } }
+addEventListener('resize', () => { if (S.project && (prefs.phoneMode || 'auto') === 'auto') applyPhoneMode(); });
+window.__daw.phone = phone; window.__daw.tutorial = tutorial;
 
 bindUI();
 ['pointerdown', 'touchend', 'keydown'].forEach((ev) => document.addEventListener(ev, () => { if (engine.ctx && engine.ctx.state !== 'running') engine.resume(); }, { passive: true }));
 $('#startBtn').addEventListener('click', start);
-(async () => { if (pinIsSet()) { $('#startOverlay').hidden = true; await lockScreen(); $('#startOverlay').hidden = false; } })();
+(async () => {
+  if (pinIsSet()) { $('#startOverlay').hidden = true; await lockScreen(); $('#startOverlay').hidden = false; }
+  // first run: interactive tutorial starts on the "start audio" button (v0.2 guide users count as done)
+  if (!prefs.tutorialDone && !prefs.guideDone) startTutorial(true);
+})();
 if ('serviceWorker' in navigator && location.protocol !== 'file:' && !location.search.includes('nosw')) {
   navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('SW registration failed', e));
 }

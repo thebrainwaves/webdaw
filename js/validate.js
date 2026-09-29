@@ -67,8 +67,10 @@ function clip(c, arrangement, bufferIds) {
   }
   const bufferId = id(c.bufferId, 'buffer'); bufferIds.add(bufferId);
   const out = { bufferId, name, gain: num(c.gain, -60, 24, 0) };
+  if (c.bpm != null) out.bpm = num(c.bpm, 20, 400, 120);
+  if (c.transpose != null) out.transpose = num(c.transpose, -24, 24, 0);
   if (arrangement) Object.assign(out, { id: id(c.id, 'clip'), start: num(c.start, 0, 86400, 0), offset: num(c.offset, 0, 86400, 0), duration: num(c.duration, 0.001, 86400, 1) });
-  else out.loopLength = num(c.loopLength, 0.01, 3600, 1);
+  else { out.loopLength = num(c.loopLength, 0.01, 3600, 1); if (c.loopStart != null) out.loopStart = num(c.loopStart, 0, 3600, 0); }
   return out;
 }
 
@@ -84,7 +86,7 @@ export function validateProject(raw) {
     created: num(raw.created, 0, 1e14, Date.now()), modified: num(raw.modified, 0, 1e14, Date.now()),
     key: { root: int(raw.key && raw.key.root, 0, 11, 0), scale: SCALES[raw.key && raw.key.scale] ? raw.key.scale : 'major' },
     master: { volume: num(raw.master && raw.master.volume, -100, 12, 0), fx: fxList(raw.master && raw.master.fx) },
-    tracks: [], midiMap: [], keyFollow: bool(raw.keyFollow),
+    tracks: [], midiMap: [], keyFollow: bool(raw.keyFollow), gridOffset: num(raw.gridOffset, -3600, 3600, 0),
   };
   for (const t of arr(raw.tracks, LIMITS.tracks, 'tracks')) {
     if (!t || typeof t !== 'object') fail('bad track');

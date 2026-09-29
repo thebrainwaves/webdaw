@@ -22,7 +22,7 @@ export function toast(msg, ms = 2600) {
 }
 // ------------------------------------------------------------------ preferences (localStorage)
 const PREF_KEY = 'webdaw.prefs';
-const DEFAULTS = { easy: false, hc: false, haptics: true, guideDone: false, autoRecThreshold: -40, autoRecPreroll: 1, sessionScale: 1 };
+const DEFAULTS = { easy: false, hc: false, haptics: true, guideDone: false, tutorialDone: false, phoneMode: 'auto', showTransients: true, autoRecThreshold: -40, autoRecPreroll: 1, sessionScale: 1 };
 export const prefs = (() => { try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(PREF_KEY) || '{}') }; } catch (e) { return { ...DEFAULTS }; } })();
 export function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch (e) {} }
 // ------------------------------------------------------------------ haptics (silently ignored where unsupported, e.g. iOS Safari)
