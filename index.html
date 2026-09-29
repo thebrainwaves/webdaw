@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>WebDAW</title>
+<meta name="description" content="Browser-based DAW: session clips, arrangement recording, built-in effects, auto-mix.">
+<meta name="theme-color" content="#1e1e1e">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="./icons/icon-32.png">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="WebDAW">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand"><span class="logo">◆</span><span id="projName" class="proj-name">WebDAW</span><span id="saveState" class="save-state"></span></div>
+  <div class="transport">
+    <button id="btnPlay" title="Play/Stop (Space)" aria-label="Play">▶</button>
+    <button id="btnStop" title="Stop (press twice: return to start)" aria-label="Stop">■</button>
+    <button id="btnRec" class="rec" title="Arrangement record (R)" aria-label="Record">●</button>
+    <button id="btnMetro" title="Metronome (M)" aria-label="Metronome" class="metro">MET</button>
+    <label class="bpm" title="Tempo">BPM <input id="bpm" type="number" min="40" max="300" value="120" inputmode="numeric"></label>
+    <div id="posDisplay" class="pos">1.1.1</div>
+  </div>
+  <div class="views"><button data-view="session" class="on">Session</button><button data-view="arrange">Arrange</button></div>
+  <button id="btnAutoMix" class="automix" title="Detect instruments and apply mix presets">Auto-Mix</button>
+  <canvas id="masterMeterTop" class="meter h top" aria-label="Master level"></canvas>
+  <button id="btnMenu" class="menu-btn" aria-label="Menu">☰</button>
+  <div id="menu" class="dropdown"></div>
+</header>
+<main id="main">
+  <section id="sessionView" class="view"></section>
+  <section id="arrangeView" class="view" hidden></section>
+</main>
+<section id="devicePanel">
+  <div id="devHead" class="dev-head"></div>
+  <div id="devices" class="devices"></div>
+</section>
+<div id="startOverlay">
+  <div class="start-card">
+    <div class="logo big">◆</div>
+    <h1>WebDAW</h1>
+    <p>Session clips · live recording · effects · auto-mix</p>
+    <button id="startBtn">Tap to start audio</button>
+    <p id="startMsg" class="hint">Audio starts after a tap (required by iOS/Android browsers). Microphone access is only requested when you arm a track.</p>
+  </div>
+</div>
+<dialog id="dlg"></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+<input type="file" id="fileProject" accept=".zip,.webdaw,.json,application/zip,application/json" hidden>
+<input type="file" id="fileAudio" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac" multiple hidden>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
