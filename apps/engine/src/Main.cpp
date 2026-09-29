@@ -42,7 +42,8 @@ public:
                 juce::MessageManager::callAsync ([s] { if (auto* app = dynamic_cast<AuduioEngineApp*> (JUCEApplication::getInstance())) app->dispatch (s); });
             }
             // parent closed the pipe (app quit or crashed): do not linger
-            juce::MessageManager::callAsync ([] { juce::JUCEApplicationBase::quit(); });
+            // (guarded: a second quit on macOS throws "Periodic events are already being generated")
+            juce::MessageManager::callAsync ([] { if (! juce::MessageManager::getInstance()->hasStopMessageBeenSent()) juce::JUCEApplicationBase::quit(); });
         });
         reader.detach();
         auto hello = engine->handle ("hello", {});
@@ -68,7 +69,7 @@ public:
         std::fflush (stdout); std::fflush (stderr);
         std::_Exit (getApplicationReturnValue());
     }
-    void systemRequestedQuit() override { quit(); }
+    void systemRequestedQuit() override { if (! juce::MessageManager::getInstance()->hasStopMessageBeenSent()) quit(); }
     void anotherInstanceStarted (const juce::String&) override {}
 
 private:

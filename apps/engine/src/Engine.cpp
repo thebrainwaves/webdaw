@@ -599,7 +599,7 @@ juce::var Engine::handle (const juce::String& cmd, const juce::var& a)
         return true;
     }
     if (cmd == "render") return renderOffline (a);
-    if (cmd == "quit") { juce::MessageManager::callAsync ([] { juce::JUCEApplicationBase::quit(); }); return true; }
+    if (cmd == "quit") { juce::MessageManager::callAsync ([] { if (! juce::MessageManager::getInstance()->hasStopMessageBeenSent()) juce::JUCEApplicationBase::quit(); }); return true; }
     fail ("unknown command: " + cmd);
 }
 } // namespace auduio
