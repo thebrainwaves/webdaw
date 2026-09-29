@@ -16,10 +16,16 @@ On Debian/Ubuntu: `libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev l
 ```sh
 npm install
 node scripts/sync-web.mjs ../daw
+cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release && cmake --build engine/build --config Release
+node scripts/place-engine.mjs                # native plugin engine -> src-tauri/binaries/ (required by externalBin)
 npx tauri build                              # installers go to src-tauri/target/release/bundle/
 npx tauri build --bundles deb,appimage       # Linux only
 scripts/smoke-linux.sh                       # headless launch test (Xvfb): screenshots + page console
 ```
+
+VST3 / AU plugins: the desktop app ships a native audio engine sidecar (`engine/`, JUCE C++) that hosts plugins
+in a separate process. Protocol, routing, security and build notes: [docs/PLUGIN-HOSTING.md](docs/PLUGIN-HOSTING.md).
+The engine also needs `libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxcomposite-dev` on Linux.
 
 Microphone access by platform:
 - **macOS:** `NSMicrophoneUsageDescription` in `src-tauri/Info.plist`, plus the audio-input entitlement in `entitlements.plist`.

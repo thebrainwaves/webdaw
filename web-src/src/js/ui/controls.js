@@ -17,6 +17,7 @@ export function fmt(p, v) {
   if (p.unit === 'dB') return (v > 0 ? '+' : '') + v.toFixed(1);
   if (p.unit === ':1') return v.toFixed(1) + ':1';
   if (p.unit === '%') return Math.round(v) + '%';
+  if (p.step >= 1) return (p.unit === 'st' && v > 0 ? '+' : '') + Math.round(v) + (p.unit === 'st' || p.unit === 'oct' ? ' ' + p.unit : '');
   return Math.abs(v) < 10 ? v.toFixed(2) : Math.round(v) + '';
 }
 

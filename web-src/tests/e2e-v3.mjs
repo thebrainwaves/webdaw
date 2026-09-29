@@ -21,7 +21,7 @@ async function newPage(opts = {}, prefs = DONE) {
   await ctx.addInitScript((prefs) => { if (prefs && !localStorage.getItem('webdaw.prefs')) localStorage.setItem('webdaw.prefs', JSON.stringify(prefs)); window.__csp = [];
     document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(e.violatedDirective)); }, prefs);
   const page = await ctx.newPage();
-  page.on('console', (m) => { if (m.type() === 'error' && !/Refused to execute inline script/.test(m.text())) errors.push(`[console] ${m.text()}`); });
+  page.on('console', (m) => { if (m.type() === 'error' && !/Refused to execute inline script|Executing inline script violates/.test(m.text())) errors.push(`[console] ${m.text()}`); });
   page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
   return { ctx, page };
 }
@@ -326,7 +326,9 @@ try {
     const n2 = await P.evaluate(() => __daw.S.selected);
     ok(`[${W}x${H}] Swipe left/right moves between tracks (one focused track at a time)`, n1 !== n0 && n2 === n0, JSON.stringify({ n0, n1, n2 }));
     // record: big button arms + records; live waveform; stop creates a clip
+    // Chromium >= 1243: the first tap right after a CDP touch swipe can be swallowed, so retry once (harness only)
     await P.tap('.ph-tab[data-tab=record]'); await sleep(200);
+    if (await P.evaluate(() => __daw.phone.tab !== 'record')) { await sleep(300); await P.tap('.ph-tab[data-tab=record]'); await sleep(200); }
     const rb = await P.evaluate(() => { const r = document.querySelector('.ph-recbtn').getBoundingClientRect(); return [r.width, r.height]; });
     await P.tap('.ph-recbtn'); await P.waitForFunction(() => __daw.engine.recording, null, { timeout: 8000 }).catch(() => {}); await sleep(1800);
     const rec = await P.evaluate(() => ({ rec: __daw.engine.recording, status: document.querySelector('.ph-status').textContent, on: document.querySelector('.ph-recbtn').classList.contains('on'), wave: __pix(document.querySelector('.ph-wave')), label: document.querySelector('.ph-recbtn').getAttribute('aria-label') }));

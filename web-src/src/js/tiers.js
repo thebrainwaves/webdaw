@@ -13,7 +13,8 @@ export const FEATURES = {
   // core (Basic)
   'core.recording': 'basic', 'core.mixer': 'basic', 'core.midi': 'basic', 'inst.drums': 'basic', 'inst.synth': 'basic',
   'fx.eq': 'basic', 'fx.compressor': 'basic', 'fx.limiter': 'basic', 'fx.delay': 'basic', 'fx.reverb': 'basic', 'fx.distortion': 'basic',
-  'automix.basic': 'basic', 'tempo.tap': 'basic',
+  'automix.basic': 'basic', 'tempo.tap': 'basic', 'randomize': 'basic', 'midifx': 'basic',
+  'plugins': 'basic', // desktop app only (native plugin engine); the placeholder tier does not restrict it
   // Mid
   'fx.chorus': 'mid', 'fx.autopan': 'mid', 'fx.tremolo': 'mid', 'fx.amp': 'mid', 'fx.maximizer': 'mid', 'fx.pitch': 'mid',
   'fx.rack': 'mid', 'grouping': 'mid', 'inst.wavetable': 'mid', 'automix.full': 'mid', 'adaptive': 'mid',

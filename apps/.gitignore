@@ -4,3 +4,5 @@ src-tauri/target/
 src-tauri/gen/
 screenshots/console.log
 release/
+src-tauri/binaries/
+engine/build/

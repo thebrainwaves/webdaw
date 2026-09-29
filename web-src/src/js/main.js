@@ -23,6 +23,11 @@ import { openPianoRoll } from './ui/pianoroll.js';
 import { History } from './history.js';
 import { validateProject, validateRack } from './validate.js';
 import { MIDI } from './midi.js';
+import { MIDI_FX_TYPES, MIDI_FX_HELP, midiFxDefaults } from './audio/midifx.js';
+import { randomizeValues } from './randomize.js';
+import { createBrowser } from './ui/browser.js';
+import { pluginSupport } from './plugins/host.js';
+import { createPluginApi, pluginCard } from './plugins/native.js';
 import { cryptoAvailable, pinIsSet, setPin, clearPin, verifyPin, isEncrypted, encryptBytes, decryptBytes } from './security.js';
 
 export const engine = new Engine();
@@ -62,7 +67,7 @@ function gate(feature, what) {
   dlg.addEventListener('close', () => { if (dlg.returnValue === 'switch') { setTier(need); toast('Tier: ' + TIER_LABELS[need] + ' — try again'); } }, { once: true });
   return false;
 }
-onTierChange(() => { if (S.project) renderAll(); });
+onTierChange(() => { if (S.project) renderAll(); if (browser) browser.render(); });
 
 // waveform peaks
 const peakCache = new WeakMap();
@@ -196,6 +201,7 @@ function normalise(project) {
     t.arrangement = t.arrangement || []; t.fx = t.fx || []; t.adaptive = t.adaptive || { enabled: false, amount: 60 };
     t.midiInput = t.midiInput || 'all'; t.fromBar = t.fromBar || 1;
     if (t.kind === 'midi' && !t.inst) t.inst = { type: 'synth', values: {} };
+    if (t.kind === 'midi') t.midiFx = Array.isArray(t.midiFx) ? t.midiFx : [];
     t.groupId = t.groupId || null; t.folded = !!t.folded;
     t.arm = false; // never auto-open inputs on load
   }
@@ -206,6 +212,7 @@ async function loadProjectData(project, buffers) {
   S.project = normalise(project);
   engine.buffers = buffers || new Map();
   engine.loadProject(S.project);
+  if (S.pluginApi) S.pluginApi.sync(true);
   S.selected = S.project.tracks[0] ? S.project.tracks[0].id : 'master'; S.sel = null;
   $('#bpm').value = S.project.bpm; $('#projName').textContent = S.project.name;
   history.clear();
@@ -251,6 +258,7 @@ function restoreSnapshot(json) {
       if (n.inst && o.inst && t.inst && o.inst.type === t.inst.type) { for (const [k, v] of Object.entries(t.inst.values)) if (n.inst.values[k] !== v) n.inst.set(k, v); t.inst.values = n.inst.values; }
       else engine.setInstrument(t);
     } else if (n.inst) t.inst.values = n.inst.values;
+    if (n.midi) { n.midi.track = t; n.midi.sync(); }
     engine.syncTrack(t); engine.syncAdaptive(t);
     if (JSON.stringify(o.arrangement) !== JSON.stringify(t.arrangement)) engine.rescheduleTrack(t);
     if (n.sessionMidi) { const c = t.slots[n.sessionSlot]; if (c && c.type === 'midi') n.sessionMidi.clip = c; else engine.stopTrackClip(t); }
@@ -262,6 +270,7 @@ function restoreSnapshot(json) {
   if (S.selected !== 'master' && !track(S.selected)) S.selected = p.tracks[0] ? p.tracks[0].id : 'master';
   $('#bpm').value = p.bpm; $('#projName').textContent = p.name;
   engine.setLoop();
+  if (S.pluginApi) S.pluginApi.sync(false).then(() => renderDevices());
   S.sel = null; renderAll(); markDirty();
 }
 function undo() { const l = history.undo(); toast(l ? 'Undo: ' + l : 'Nothing to undo', 1200); haptic(8); }
@@ -602,7 +611,7 @@ function midiTargets(inputId) {
 function noteEvent(t, note, vel, on) {
   const n = engine.tracks.get(t.id); if (!n || !n.inst) return;
   if (engine.ctx.state !== 'running') engine.resume();
-  on ? n.inst.noteOn(note, vel) : n.inst.noteOff(note);
+  const dst = n.midi || n.inst; on ? dst.noteOn(note, vel) : dst.noteOff(note);
   const pos = engine.position(), now = engine.ctx.currentTime;
   const R = S.midiRec && S.midiRec.tracks.get(t.id);
   if (R && engine.recording) {
@@ -641,12 +650,14 @@ MIDI.onCC = (inputId, ch, cc, value) => {
 MIDI.onDevices = () => { if (S.project) renderSession(); };
 MIDI.onBend = (inputId, ch, v) => { if (!S.project) return; for (const t of midiTargets(inputId)) { const n = engine.tracks.get(t.id); if (n && n.inst && n.inst.pitchBend) n.inst.pitchBend(v); } };
 function paramDef(m) {
+  if (typeof m.fx === 'string' && m.fx.startsWith('plugin:')) return S.pluginApi && S.pluginApi.rt.has(m.fx.slice(7)) ? { key: m.key, label: m.key, min: 0, max: 1, def: 0 } : null;
   if (m.fx === 'inst') { const t = track(m.trackId); const C = t && t.inst && INSTRUMENT_TYPES[t.inst.type]; return C && C.params.find((p) => p.key === m.key); }
   const list = m.trackId === 'master' ? S.project.master.fx : (track(m.trackId) || { fx: [] }).fx;
   const d = list[m.fx]; return d && EFFECT_TYPES[d.type].params.find((p) => p.key === m.key);
 }
 // Set any device parameter live (knob, MIDI CC). Undo steps are coalesced per parameter.
 function setParam(trackId, fx, key, v, fromMidi = false) {
+  if (typeof fx === 'string' && fx.startsWith('plugin:')) { if (S.pluginApi) S.pluginApi.setParam(fx.slice(7), +key, v); return; }
   history.push('Change ' + key, `p:${trackId}:${fx}:${key}`);
   if (fx === 'inst') { const n = engine.tracks.get(trackId); if (n && n.inst) n.inst.set(key, v); }
   else engine.setFxParam(trackId, fx, key, v);
@@ -879,7 +890,7 @@ function newMidiClipInSlot(t, i) {
 function editMidiClip(t, clip) {
   openPianoRoll({ clip, title: `${t.name} · ${clip.name || 'MIDI'}`, color: t.color, history,
     onChange: (what) => { if (what === 'length' && clip.id) clip.duration = clip.lengthBeats * engine.beatDur; markDirty(); if (what === 'close') { renderSession(); renderArrange(); } },
-    preview: (n) => { const nd = engine.tracks.get(t.id); if (nd && nd.inst) { engine.resume(); nd.inst.playNote(n, 90, engine.ctx.currentTime, 0.25); } } });
+    preview: (n) => { const nd = engine.tracks.get(t.id); if (nd && nd.inst) { engine.resume(); (nd.midi || nd.inst).playNote(n, 90, engine.ctx.currentTime, 0.25); } } });
 }
 async function onSlotClick(t, i, launch = false) {
   await engine.resume();
@@ -1663,10 +1674,24 @@ function renderDevices() {
   } }, h('option', { value: '' }, '+ FX'), Object.entries(EFFECT_TYPES).filter(([k]) => k !== 'rack').map(([k, C]) => h('option', { value: k }, C.label + (allowed('fx.' + k) ? '' : ` (${tierShort('fx.' + k)} tier)`))),
     h('optgroup', { label: 'Racks' + (allowed('fx.rack') ? '' : ` (${tierShort('fx.rack')} tier)`) }, Object.keys(allRackPresets()).map((n) => h('option', { value: 'rack:' + n }, 'Rack: ' + n))));
   head.append(add);
+  if (t && t.kind === 'midi') head.append(h('select', { class: 'add-midifx', title: 'Add a MIDI effect in front of the instrument (arpeggiator, chord, scale...)', onchange: (e) => {
+    const v = e.target.value; e.target.value = ''; if (v) addMidiFx(t, v);
+  } }, h('option', { value: '' }, '+ MIDI FX'), Object.entries(MIDI_FX_TYPES).map(([k, C]) => h('option', { value: k }, C.label))));
+  head.append(h('span', { class: 'rand-group', title: 'Randomizer' },
+    h('button', { class: 'small rand-chain', title: 'Randomize every effect in this chain (musical mode keeps levels safe; Ctrl/Cmd+Z undoes)', onclick: () => randomizeScope(tid, 'chain') }, icon('dice'), 'Chain'),
+    isMaster ? null : h('button', { class: 'small rand-track', title: 'Randomize the whole track: MIDI effects, instrument and effects', onclick: () => randomizeScope(tid, 'track') }, icon('dice'), 'Track')));
   head.append(h('button', { class: 'small learn-btn adv' + (S.learn.active ? ' on' : ''), title: 'MIDI Learn: tap this, tap a knob, then move a knob/fader on your MIDI controller', onclick: toggleLearn }, 'Learn'));
   head.append(h('button', { class: 'collapse small', onclick: () => { $('#devicePanel').classList.toggle('collapsed'); }, title: 'Show/hide the device panel', 'aria-label': 'Show or hide the device panel' }, icon('chevDown')));
 
-  if (t && t.kind === 'midi') panel.append(instrumentCard(t));
+  if (t && t.kind === 'midi') {
+    (t.midiFx || []).forEach((d, i) => panel.append(midiFxCard(t, i)));
+    const native = S.pluginApi && S.pluginApi.isNative(t);
+    if (!native) panel.append(instrumentCard(t));
+    if (t.plugins && S.pluginApi) t.plugins.forEach((e, i) => panel.append(pluginCard(S.pluginApi, t, i, pluginUi)));
+    else if (t.plugins) panel.append(h('div', { class: 'device pl-missing', title: pluginSupport().reason }, h('div', { class: 'dev-bar' }, h('span', { class: 'dev-kind' }, icon('plug')), h('span', { class: 'dev-name' }, t.plugins.map((e) => e.name).join(', '))),
+      h('div', { class: 'dev-body' }, h('div', { class: 'pl-status' }, 'Plugins on this track need the Auduio desktop app. They are kept in the project and play again there.'))));
+    if (native && fxList.length) panel.append(h('div', { class: 'pl-note', title: 'Plugin tracks render in the native engine and play straight to the audio device.' }, 'Built-in effects after a plugin instrument are bypassed (the plugin plays in the native engine). Use plugin effects here instead.'));
+  }
   if (t && t.adaptive.enabled) panel.append(adaptiveCard(t));
   const instances = engine.fxInstances(tid);
   if (!fxList.length && !(t && t.kind === 'midi')) panel.append(h('div', { class: 'empty-chain' }, isMaster ? 'Master chain is empty.' : 'No effects. Add one (+ FX), pick a preset, or use Auto-Mix.'));
@@ -1706,8 +1731,9 @@ function deviceCard(tid, fxList, d, idx, inst, t) {
     h('span', { class: 'dev-name' }, C.label),
     h('button', { class: 'adv', title: 'Move left', onclick: () => { if (idx > 0) rebuild('Move effect', () => { [fxList[idx - 1], fxList[idx]] = [fxList[idx], fxList[idx - 1]]; }); } }, '‹'),
     h('button', { class: 'adv', title: 'Move right', onclick: () => { if (idx < fxList.length - 1) rebuild('Move effect', () => { [fxList[idx + 1], fxList[idx]] = [fxList[idx], fxList[idx + 1]]; }); } }, '›'),
+    ...randButtons(() => fxTargets(tid, fxList, idx), tid),
     h('button', { class: 'expand', title: expanded ? 'Collapse (show main controls only)' : 'Expand (all controls + bigger display)', onclick: () => { expanded ? S.expanded.delete(ekey) : S.expanded.add(ekey); renderDevices(); } }, icon(expanded ? 'chevUp' : 'chevDown')),
-    h('button', { title: 'Remove effect', onclick: () => rebuild('Remove effect', () => fxList.splice(idx, 1)) }, '×')));
+    h('button', { class: 'rm', title: 'Remove effect', 'aria-label': 'Remove effect', onclick: () => rebuild('Remove effect', () => fxList.splice(idx, 1)) }, icon('close'))));
   if (d.type === 'rack') { card.append(rackBody(tid, idx, d, inst, expanded)); if (!allowed('fx.rack')) $('.dev-name', card).append(lockBadge('fx.rack')); return card; }
   if (!allowed('fx.' + d.type)) $('.dev-name', card).append(' ', lockBadge('fx.' + d.type));
   const body = h('div', { class: 'dev-body' });
@@ -1719,6 +1745,7 @@ function deviceCard(tid, fxList, d, idx, inst, t) {
     const isEasy = easy.includes(p.key);
     if (!expanded && !isEasy) continue;
     const el = p.type === 'select' ? selectParam(p, d.values[p.key], onParam(p)) : knobFor(tid, idx, p, d.values[p.key], onParam(p), C.label);
+    markLock(el, d, p.key);
     if (!isEasy) el.classList.add('adv');
     if (d.type === 'pitch' && (p.key === 'root' || p.key === 'scale') && d.values.keySource !== 'manual') el.classList.add('dim');
     knobs.append(el);
@@ -1787,6 +1814,7 @@ function instrumentCard(t) {
       h('option', { value: '' }, 'Preset…'), Object.keys(C.presets).map((k) => h('option', { value: k }, k))));
     if (!allowed('inst.' + type)) bar.append(lockBadge('inst.' + type));
   }
+  bar.append(...randButtons(() => [instTarget(t)].filter(Boolean), t.id));
   bar.append(h('button', { class: 'expand', title: expanded ? 'Collapse' : 'Expand (all controls)', onclick: () => { expanded ? S.expanded.delete(ekey) : S.expanded.add(ekey); renderDevices(); } }, icon(expanded ? 'chevUp' : 'chevDown')));
   card.append(bar);
   const body = h('div', { class: 'dev-body' });
@@ -1826,11 +1854,248 @@ function instrumentCard(t) {
     if (!expanded && !p.easy) continue;
     const onC = (v) => setParam(t.id, 'inst', p.key, v);
     const el = p.type === 'select' ? selectParam(p, I ? I.values[p.key] : p.def, onC) : knobFor(t.id, 'inst', p, I ? I.values[p.key] : p.def, onC, C.label);
+    markLock(el, t.inst, p.key);
     if (!p.easy) el.classList.add('adv');
     knobs.append(el);
   }
   body.append(knobs); card.append(body);
   return card;
+}
+
+// ------------------------------------------------------------------ MIDI effects (in front of the instrument)
+function addMidiFx(t, type, at) {
+  if (!t || t.kind !== 'midi' || !MIDI_FX_TYPES[type]) return false;
+  if ((t.midiFx || []).length >= 8) { toast('Up to 8 MIDI effects per track.'); return false; }
+  change('Add ' + MIDI_FX_TYPES[type].label, () => { t.midiFx = t.midiFx || []; t.midiFx.splice(at == null ? t.midiFx.length : at, 0, midiFxDefaults(type)); engine.setMidiFx(t); });
+  S.expanded.add(`${t.id}:mfx${t.midiFx.length - 1}:${type}`); renderDevices();
+  return true;
+}
+function midiFxCard(t, idx) {
+  const d = t.midiFx[idx], C = MIDI_FX_TYPES[d.type], color = '#EF4444';
+  const ekey = `${t.id}:mfx${idx}:${d.type}`, expanded = S.expanded.has(ekey);
+  const rebuild = (label, mut) => { change(label, () => { mut(); engine.setMidiFx(t); }); renderDevices(); };
+  const card = h('div', { class: 'device midifx' + (d.enabled === false ? ' off' : '') + (expanded ? ' expanded' : ''), 'data-type': d.type, style: { '--fx': color }, title: MIDI_FX_HELP[d.type] || C.label });
+  card.append(h('div', { class: 'dev-bar' },
+    h('button', { class: 'pwr' + (d.enabled !== false ? ' on' : ''), title: 'On/off (bypass)', onclick: () => rebuild('Bypass', () => { d.enabled = d.enabled === false; }) }, icon('power')),
+    h('span', { class: 'dev-kind', title: 'MIDI effect' }, icon('midi')), h('span', { class: 'dev-name' }, C.label),
+    h('button', { class: 'adv', title: 'Move left', onclick: () => { if (idx > 0) rebuild('Move MIDI effect', () => { const L = t.midiFx; [L[idx - 1], L[idx]] = [L[idx], L[idx - 1]]; }); } }, '‹'),
+    h('button', { class: 'adv', title: 'Move right', onclick: () => { if (idx < t.midiFx.length - 1) rebuild('Move MIDI effect', () => { const L = t.midiFx; [L[idx + 1], L[idx]] = [L[idx], L[idx + 1]]; }); } }, '›'),
+    ...randButtons(() => [midiFxTarget(t, idx)], t.id),
+    h('button', { class: 'expand', title: expanded ? 'Collapse' : 'Expand (all controls)', onclick: () => { expanded ? S.expanded.delete(ekey) : S.expanded.add(ekey); renderDevices(); } }, icon(expanded ? 'chevUp' : 'chevDown')),
+    h('button', { class: 'rm', title: 'Remove MIDI effect', 'aria-label': 'Remove MIDI effect', onclick: () => rebuild('Remove MIDI effect', () => t.midiFx.splice(idx, 1)) }, icon('close'))));
+  const knobs = h('div', { class: 'knobs' });
+  for (const p of C.params) {
+    if (!expanded && !p.easy) continue;
+    const onC = (v) => { history.push('Change ' + p.label, `mfx:${t.id}:${idx}:${p.key}`); d.values[p.key] = v; markDirty(); if (p.key === 'keySource') renderDevices(); };
+    const el = p.type === 'select' ? selectParam(p, d.values[p.key], onC) : createKnob(p, d.values[p.key], onC);
+    if (d.type === 'scale' && (p.key === 'root') && d.values.keySource !== 'manual') el.classList.add('dim');
+    markLock(el, d, p.key);
+    if (!p.easy) el.classList.add('adv');
+    knobs.append(el);
+  }
+  if (d.type === 'scale' || d.type === 'random' || (d.type === 'chord' && d.values.fit === 'on')) knobs.prepend(h('div', { class: 'pitch-key', title: 'Song key (tap to change)', onclick: (e) => keyPopover(e.currentTarget) }, d.type === 'scale' && d.values.keySource === 'manual' ? `${d.values.root} ${d.values.scale}` : keyName(S.project.key)));
+  card.append(h('div', { class: 'dev-body' }, knobs));
+  return card;
+}
+
+// ------------------------------------------------------------------ randomizer (every device: instruments, MIDI fx, audio fx, racks, plugins)
+// A target = one device: its parameter definitions, the object that stores its values + locks, and a setter.
+function instTarget(t) {
+  const n = engine.tracks.get(t.id); if (!n || !n.inst || !t.inst) return null; const C = INSTRUMENT_TYPES[t.inst.type];
+  return { label: C.label, type: t.inst.type, defs: C.params, holder: t.inst, values: () => n.inst.values, set: (k, v) => n.inst.set(k, v) };
+}
+function midiFxTarget(t, i) { const d = t.midiFx[i], C = MIDI_FX_TYPES[d.type]; return { label: C.label, type: d.type, defs: C.params, holder: d, values: () => d.values, set: (k, v) => { d.values[k] = v; } }; }
+function fxTargets(tid, list, idx) {
+  const d = list[idx]; if (!d) return []; const C = EFFECT_TYPES[d.type], I = engine.fxInstances(tid)[idx];
+  const out = [];
+  if (d.type === 'rack' && I && I.chains) {
+    d.chains.forEach((c, ci) => c.fx.forEach((fd, fi) => { const inner = I.chains[ci] && I.chains[ci].fx[fi]; if (!inner) return;
+      out.push({ label: `${C.label} ${c.name}: ${EFFECT_TYPES[fd.type].label}`, type: fd.type, defs: EFFECT_TYPES[fd.type].params, holder: fd, values: () => inner.values, set: (k, v) => { inner.set(k, v); fd.values = inner.values; } }); }));
+  }
+  out.push({ label: C.label, type: d.type, defs: C.params, holder: d, values: () => d.values, set: (k, v) => engine.setFxParam(tid, idx, k, v) });
+  return out;
+}
+function scopeTargets(tid, scope) {
+  const isM = tid === 'master', t = isM ? null : track(tid), list = isM ? S.project.master.fx : t ? t.fx : [];
+  const out = [];
+  if (scope === 'track' && t && t.kind === 'midi') { (t.midiFx || []).forEach((d, i) => out.push(midiFxTarget(t, i))); const it = instTarget(t); if (it) out.push(it); }
+  if (t && t.plugins && S.pluginApi) t.plugins.forEach((e) => { if (scope === 'track' || !e.instrument) out.push(S.pluginApi.target(t, e.id)); });
+  list.forEach((d, i) => out.push(...fxTargets(tid, list, i)));
+  return out.filter(Boolean);
+}
+const randSettings = () => ({ amount: Math.max(0, Math.min(100, prefs.randAmount == null ? 50 : +prefs.randAmount)) / 100, mode: prefs.randMode === 'chaos' ? 'chaos' : 'musical' });
+// One undo step per randomize. Locked params are never touched; musical mode keeps output levels.
+function randomizeTargets(targets, label) {
+  targets = targets.filter(Boolean);
+  if (!targets.length) { toast('Nothing to randomize here.'); return 0; }
+  if (!gate('randomize', 'Randomizer')) return 0;
+  const o = randSettings(), plan = [];
+  for (const T of targets) { const ch = randomizeValues(T.defs, T.values(), { ...o, locks: T.holder.locks, deviceType: T.type }); if (Object.keys(ch).length) plan.push([T, ch]); }
+  const n = plan.reduce((a, [, ch]) => a + Object.keys(ch).length, 0);
+  if (!n) { toast(o.amount ? 'Nothing changed: all parameters are locked.' : 'Amount is 0 %: nothing to change.'); return 0; }
+  for (const [T, ch] of plan) if (T.prepare) T.prepare(Object.keys(ch)); // plugins: remember old values so undo can restore them
+  change(label, () => { for (const [T, ch] of plan) { for (const [k, v] of Object.entries(ch)) T.set(k, v); if (T.commit) T.commit(); } });
+  renderDevices(); haptic(12);
+  $$('#devices .device').forEach((c) => { c.classList.remove('rand-flash'); void c.offsetWidth; c.classList.add('rand-flash'); });
+  toast(`${label}: ${n} parameter${n === 1 ? '' : 's'} changed${o.mode === 'musical' ? ' (musical)' : ''}. Undo: Ctrl/Cmd+Z`, 2600);
+  return n;
+}
+function randomizeScope(tid, scope) {
+  const t = tid === 'master' ? null : track(tid);
+  return randomizeTargets(scopeTargets(tid, scope), scope === 'track' ? `Randomize track ${t ? t.name : ''}`.trim() : 'Randomize chain');
+}
+function randButtons(getTargets, tid) {
+  const go = () => { const T = getTargets(); randomizeTargets(T, 'Randomize ' + (T[T.length - 1] ? T[T.length - 1].label : 'device')); };
+  return [
+    h('button', { class: 'rand-btn', title: 'Randomize this device (musical: keeps volume safe). Ctrl/Cmd+Z undoes. Arrow: amount, locks, chain/track.', 'aria-label': 'Randomize device', onclick: go }, icon('dice')),
+    h('button', { class: 'rand-more', title: 'Randomizer options: amount, musical/chaos, lock parameters', 'aria-label': 'Randomizer options', onclick: (e) => randPopover(e.currentTarget, getTargets, tid, go) }, icon('chevDown')),
+  ];
+}
+function toggleLock(holder, key) {
+  const L = new Set(holder.locks || []); L.has(key) ? L.delete(key) : L.add(key);
+  if (L.size) holder.locks = [...L]; else delete holder.locks;
+  markDirty();
+}
+function markLock(el, holder, key) {
+  if (!holder || !(holder.locks || []).includes(key)) return el;
+  el.classList.add('rlocked');
+  el.append(h('button', { class: 'rlock-ico', title: 'Locked: the randomizer leaves this alone. Click to unlock.', 'aria-label': 'Unlock parameter', onclick: (e) => { e.stopPropagation(); toggleLock(holder, key); renderDevices(); } }, icon('lock')));
+  return el;
+}
+function randPopover(anchor, getTargets, tid, go) {
+  closeMenus();
+  const targets = getTargets(), main = targets[targets.length - 1]; if (!main) return;
+  const set = randSettings();
+  const pct = h('span', { class: 'rp-val' }, Math.round(set.amount * 100) + ' %');
+  const amt = h('input', { type: 'range', min: 0, max: 100, step: 1, value: Math.round(set.amount * 100), 'aria-label': 'Randomize amount', class: 'rp-amount',
+    oninput: (e) => { prefs.randAmount = +e.target.value; pct.textContent = e.target.value + ' %'; savePrefs(); } });
+  const hint = h('p', { class: 'hint rp-hint' });
+  const modeBtn = (m, label) => h('button', { class: 'rp-mode' + (set.mode === m ? ' on' : ''), 'data-mode': m, 'aria-pressed': String(set.mode === m), onclick: (e) => {
+    prefs.randMode = m; savePrefs(); $$('.rp-mode', pop).forEach((b) => { b.classList.toggle('on', b.dataset.mode === m); b.setAttribute('aria-pressed', String(b.dataset.mode === m)); }); showHint(); } }, label);
+  const showHint = () => { hint.textContent = (prefs.randMode === 'chaos') ? 'Chaos: everything that is not locked, full range. Output levels can jump, so turn down first.' : 'Musical: output volume and gain stay where they are, feedback, resonance and drive stay in a safe range, EQ boosts are balanced.'; };
+  showHint();
+  const chips = h('div', { class: 'rp-locks' });
+  const drawChips = () => {
+    chips.innerHTML = '';
+    for (const T of targets) {
+      if (targets.length > 1) chips.append(h('div', { class: 'rp-dev' }, T.label));
+      for (const p of T.defs) { if (p.type === 'set') continue; const on = (T.holder.locks || []).includes(p.key);
+        chips.append(h('button', { class: 'rp-chip' + (on ? ' on' : ''), 'aria-pressed': String(on), title: on ? 'Locked: click to allow randomizing' : 'Click to lock (the randomizer will not change it)', onclick: () => { toggleLock(T.holder, p.key); drawChips(); renderDevices(); } }, icon(on ? 'lock' : 'unlock'), p.label)); }
+    }
+  };
+  drawChips();
+  const lockAll = (on) => { for (const T of targets) { if (on) T.holder.locks = T.defs.filter((p) => p.type !== 'set').map((p) => p.key); else delete T.holder.locks; } markDirty(); drawChips(); renderDevices(); };
+  const pop = h('div', { class: 'popover rand-pop', role: 'dialog', 'aria-label': 'Randomizer' },
+    h('div', { class: 'rp-title' }, icon('dice'), h('span', {}, 'Randomize: ' + main.label)),
+    h('label', { class: 'rp-row' }, h('span', {}, 'Amount'), amt, pct),
+    h('div', { class: 'rp-row rp-modes', role: 'group', 'aria-label': 'Mode' }, modeBtn('musical', 'Musical'), modeBtn('chaos', 'Chaos')),
+    hint,
+    h('div', { class: 'rp-sub' }, h('span', {}, 'Lock parameters'), h('button', { class: 'small', onclick: () => lockAll(true) }, 'Lock all'), h('button', { class: 'small', onclick: () => lockAll(false) }, 'Unlock all')),
+    chips,
+    h('div', { class: 'rp-actions' },
+      h('button', { class: 'primary rp-go', onclick: go }, icon('dice'), 'Device'),
+      h('button', { class: 'rp-chain', onclick: () => randomizeScope(tid, 'chain') }, icon('dice'), 'Chain'),
+      tid !== 'master' ? h('button', { class: 'rp-track', onclick: () => randomizeScope(tid, 'track') }, icon('dice'), 'Track') : null,
+      h('button', { class: 'rp-undo', title: 'Undo (Ctrl/Cmd+Z)', onclick: () => undo(), 'aria-label': 'Undo' }, icon('undo'), 'Undo')));
+  document.body.append(pop);
+  const r = anchor.getBoundingClientRect(), pr = pop.getBoundingClientRect();
+  pop.style.left = Math.max(4, Math.min(r.left - pr.width / 2, innerWidth - pr.width - 4)) + 'px';
+  pop.style.top = (r.top - pr.height - 6 > 4 ? r.top - pr.height - 6 : Math.min(r.bottom + 6, innerHeight - pr.height - 4)) + 'px';
+  setTimeout(() => document.addEventListener('pointerdown', onDocDown, { once: true }), 0);
+}
+
+// ------------------------------------------------------------------ device browser (desktop sidebar)
+const INST_HELP = { synth: 'Analog-style synth: 3 oscillators, filter, envelopes.', wavetable: 'Wavetable synth: morphing tables, unison, LFO.', drums: 'Drum kit: synthesized drums on pads (no samples).' };
+function browserSections() {
+  const sup = pluginSupport();
+  const plug = S.plugins || { list: [], status: '' };
+  return [
+    { id: 'inst', label: 'Instruments', icon: 'synth', color: '#8B5CF6', items: Object.entries(INSTRUMENT_TYPES).map(([k, C]) => ({ kind: 'inst', type: k, label: C.label, help: INST_HELP[k] || C.label, locked: !allowed('inst.' + k), color: '#8B5CF6' })) },
+    { id: 'midifx', label: 'MIDI Effects', icon: 'midi', color: '#EF4444', items: Object.entries(MIDI_FX_TYPES).map(([k, C]) => ({ kind: 'midifx', type: k, label: C.label, help: MIDI_FX_HELP[k], color: '#EF4444' })) },
+    { id: 'fx', label: 'Audio Effects', icon: 'wave', color: '#A78BFA', items: Object.entries(EFFECT_TYPES).filter(([k]) => k !== 'rack').map(([k, C]) => ({ kind: 'fx', type: k, label: C.label, help: EFFECT_HELP[k] || C.label, locked: !allowed('fx.' + k), color: FX_COLORS[k] })) },
+    { id: 'racks', label: 'Racks', icon: 'rack', color: '#9aa4ad', items: Object.keys(allRackPresets()).map((n) => ({ kind: 'rack', type: 'rack', name: n, label: n, search: 'rack', help: 'Rack: parallel chains with macro knobs.', locked: !allowed('fx.rack'), drag: { kind: 'rack', type: 'rack', name: n } })) },
+    { id: 'plugins', label: 'Plugins', icon: 'plug', color: '#F87171', noteIcon: sup.desktop ? null : 'desktop', noteKind: sup.desktop ? '' : 'desktop-only',
+      note: sup.desktop ? (plug.status || (plug.list.length ? '' : 'No plugins yet. Scan your plugin folders.')) : 'Desktop app only. ' + sup.reason,
+      actions: sup.desktop && S.pluginApi ? [{ label: 'Scan', icon: 'refresh', title: 'Scan plugin folders (runs in a separate process, so a broken plugin cannot crash Auduio)', run: () => S.pluginApi.scan() }] : null,
+      items: sup.desktop ? [...plug.list].sort((a, b) => (b.isInstrument ? 1 : 0) - (a.isInstrument ? 1 : 0)).map((p) => ({ kind: 'plugin', type: 'plugin', uid: p.uid, instrument: !!p.isInstrument, label: p.name, badge: (p.isInstrument ? 'Inst ' : 'FX ') + p.format, search: `${p.vendor || ''} ${p.format} ${p.category || ''}`, help: `${p.name} (${p.format}${p.vendor ? ', ' + p.vendor : ''})${p.isInstrument ? ' - instrument' : ' - effect'}`, color: '#F87171', drag: { kind: 'plugin', type: 'plugin', uid: p.uid, name: p.name, instrument: !!p.isInstrument } })) : [] },
+  ];
+}
+function browserTargetAt(x, y) {
+  const els = document.elementsFromPoint(x, y);
+  for (const e of els) {
+    if (!e.closest) continue;
+    const c = e.closest('#sessionView .col[data-id], #arrangeView .lane-head[data-id], #arrangeView .lane[data-id]');
+    if (c && c.dataset.id) { const id = c.dataset.id; if (id === 'master' || track(id)) return { trackId: id, el: c.classList.contains('col') ? (c.querySelector('.col-head') || c) : c }; }
+    const dp = e.closest('#devicePanel'); if (dp && S.selected) return { trackId: S.selected, el: $('#devices') };
+    if (e.closest('#main')) return { trackId: 'new', el: $('#main') };
+  }
+  return null;
+}
+// add a browser item to a track. trackId: null = selected track, 'new' = create a fitting track
+function addBrowserItem(it, trackId) {
+  if (!S.project || !it) return;
+  const want = it.kind === 'inst' || it.kind === 'midifx' || (it.kind === 'plugin' && it.instrument) ? 'midi' : 'any';
+  let t = trackId === 'new' ? null : track(trackId || S.selected);
+  const isMaster = (trackId || S.selected) === 'master' && trackId !== 'new';
+  if (it.kind === 'inst' && !gate('inst.' + it.type, INSTRUMENT_TYPES[it.type].label)) return;
+  if ((it.kind === 'fx' || it.kind === 'rack') && !gate('fx.' + it.type, EFFECT_TYPES[it.type].label)) return;
+  if (it.kind === 'plugin') return S.pluginApi ? S.pluginApi.addToTrack(it, t, isMaster) : toast(pluginSupport().reason, 5000);
+  if (isMaster && want === 'midi') t = null;
+  if (t && t.kind === 'group' && want === 'midi') t = null;
+  if (!t && !isMaster) {
+    // no fitting track: make one (single undo step together with the device)
+    if (want === 'midi') t = addTrack(null, 'midi', it.kind === 'inst' ? it.type : 'synth');
+    else t = addTrack(null, 'audio');
+    if (!t) return;
+    if (it.kind === 'inst') { toast(`New MIDI track with ${INSTRUMENT_TYPES[it.type].label}`); return; }
+    return addDeviceTo(t, false, it, true);
+  }
+  if (want === 'midi' && t.kind !== 'midi') { t = addTrack(null, 'midi', it.kind === 'inst' ? it.type : 'synth'); if (!t) return; if (it.kind === 'inst') return toast(`New MIDI track with ${INSTRUMENT_TYPES[it.type].label}`); return addDeviceTo(t, false, it, true); }
+  addDeviceTo(t, isMaster, it, false);
+}
+function addDeviceTo(t, isMaster, it, sameStep) {
+  const run = (label, fn) => { if (sameStep) { fn(); markDirty(); } else change(label, fn); };
+  S.selected = isMaster ? 'master' : t.id;
+  if (it.kind === 'inst') {
+    if (t.inst && t.inst.type === it.type) { toast(`${t.name} already uses ${INSTRUMENT_TYPES[it.type].label}`); renderAll(); return; }
+    run('Instrument', () => { t.inst = { type: it.type, values: {} }; t.instrument = it.type === 'drums' ? 'drums' : 'keys'; t.instrumentSource = 'manual'; engine.setInstrument(t); });
+  } else if (it.kind === 'midifx') {
+    if ((t.midiFx || []).length >= 8) return toast('Up to 8 MIDI effects per track.');
+    run('Add ' + MIDI_FX_TYPES[it.type].label, () => { t.midiFx = t.midiFx || []; t.midiFx.push(midiFxDefaults(it.type)); engine.setMidiFx(t); });
+    S.expanded.add(`${t.id}:mfx${t.midiFx.length - 1}:${it.type}`);
+  } else {
+    const list = isMaster ? S.project.master.fx : t.fx;
+    const def = it.kind === 'rack' ? { type: 'rack', enabled: true, ...rackPresetDef(it.name) } : { type: it.type, enabled: true, values: {} };
+    run('Add effect', () => { list.push(def); isMaster ? engine.setMasterFx(list) : engine.setTrackFx(t); });
+    S.expanded.add(`${isMaster ? 'master' : t.id}:${list.length - 1}:${def.type}`);
+  }
+  $('#devicePanel').classList.remove('collapsed');
+  renderAll();
+  setTimeout(() => { const d = $('#devices'); if (d && it.kind !== 'midifx' && it.kind !== 'inst') d.scrollLeft = d.scrollWidth; }, 0);
+  const what = it.kind === 'inst' ? INSTRUMENT_TYPES[it.type].label : it.kind === 'midifx' ? MIDI_FX_TYPES[it.type].label : it.kind === 'rack' ? 'Rack: ' + it.name : EFFECT_TYPES[it.type].label;
+  toast(`Added ${what} to ${isMaster ? 'Master' : t.name}`, 1800);
+}
+const plSearch = new Map();
+const pluginUi = {
+  randButtons: (g, tid) => randButtons(g, tid), toggleLock: (holder, key) => { toggleLock(holder, key); },
+  renderDevices: () => renderDevices(), isExpanded: (k) => S.expanded.has(k), toggleExpanded: (k) => { S.expanded.has(k) ? S.expanded.delete(k) : S.expanded.add(k); renderDevices(); },
+  searchOf: (id) => plSearch.get(id), setSearch: (id, v) => plSearch.set(id, v),
+  mapped: (fx, key) => S.project.midiMap.some((m) => m.fx === fx && m.key === key),
+  learn: { active: () => S.learn.active, set: (tg) => { $$('.learn-target').forEach((x) => x.classList.remove('learn-target')); S.learn.target = tg; toast(`Now move a control on your MIDI device for "${tg.label}"`, 2500); } },
+};
+function initPlugins() {
+  if (S.pluginApi || !pluginSupport().desktop) return;
+  S.pluginApi = createPluginApi({ engine, getProject: () => S.project, change, history, markDirty, renderAll: () => renderAll(), renderDevices: () => renderDevices(),
+    renderBrowser: () => { if (browser) browser.render(); }, addTrack: (n, k, i) => addTrack(n, k, i), select: (id) => { S.selected = id; },
+    onParamsChanged: (pid) => { const c = document.querySelector(`#devices .device[data-plugin="${pid}"]`); if (!c) return; const r = S.pluginApi.rt.get(pid);
+      $$('.pl-row', c).forEach((row) => { const i = +row.dataset.i, v = r.values[i]; if (v != null && row.setValue && !row.contains(document.activeElement)) { row.setValue(v); const p = r.byIndex.get(i); const val = $('.pl-val', row); if (p && p.text && val) val.textContent = p.text; } }); } });
+  S.plugins = S.pluginApi;
+  S.pluginApi.init().then(() => { if (S.project) renderDevices(); });
+}
+let browser = null;
+function initBrowser() {
+  if (browser || !$('#browser')) return;
+  browser = createBrowser({ root: $('#browser'), sections: browserSections, onAdd: addBrowserItem, resolveTarget: browserTargetAt, onLayout: () => { if (S.project) { renderArrange(); } } });
 }
 
 // ------------------------------------------------------------------ racks (parallel chains + macros), presets
@@ -2224,7 +2489,7 @@ function menuActions() {
     ['Tutorial', () => startTutorial()],
     ['-'],
     ['Install app', installApp],
-    ['About', () => openDialog('About Auduio', h('div', {}, h('p', {}, 'Auduio v0.3.1 (formerly WebDAW) — a browser DAW built on the Web Audio API. Works offline once loaded; makes no network requests besides loading itself. Projects are saved in this browser (IndexedDB); use Export/Import to move them.'),
+    ['About', () => openDialog('About Auduio', h('div', {}, h('p', {}, 'Auduio v0.4.0 (formerly WebDAW) — a browser DAW built on the Web Audio API. Works offline once loaded; makes no network requests besides loading itself. Projects are saved in this browser (IndexedDB); use Export/Import to move them.'),
       h('p', { class: 'hint' }, 'Shortcuts: Space play/stop · R record · M metronome · Tab switch view · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z or Ctrl+Y redo · Ctrl/Cmd+C/V/D copy/paste/duplicate · Delete remove clip · S split.')))],
   ];
   const m = $('#menu'); m.innerHTML = '';
@@ -2387,6 +2652,7 @@ function bindUI() {
     else if (k === 'm') $('#btnMetro').click();
     else if (k === 't') tapTempo();
     else if (k === 's') clipOp('split');
+    else if (k === 'b' && browser && !phone.active) browser.toggle();
     else if (e.key === 'Tab') { e.preventDefault(); S.view = S.view === 'session' ? 'arrange' : 'session'; renderAll(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') { if (S.sel) { e.preventDefault(); clipOp('del'); } }
     else if (e.key === 'Escape') { closeMenus(); if (helpMode) toggleHelp(); if (S.carry) { S.carry = null; renderCarryBar(); } engine.stopAudition(); }
@@ -2426,6 +2692,7 @@ async function start() {
   try { await engine.init(); await engine.resume(); }
   catch (e) { $('#startMsg').textContent = 'Audio could not start: ' + e.message; $('#startBtn').disabled = false; return; }
   engine.latencyOffsetMs = +localStorage.getItem('latOffset') || 0;
+  initPlugins();
   S.devices = await engine.listDevices().catch(() => ({ inputs: [], outputs: [] }));
   let loaded = null;
   try { const id = await DB.lastProjectId(); if (id) loaded = await DB.loadProject(id, engine.ctx); } catch (e) { console.warn('IndexedDB load failed', e); }
@@ -2434,6 +2701,7 @@ async function start() {
   }
   if (loaded) await loadProjectData(loaded.project, loaded.buffers); else await newProjectFlow(2);
   $('#startOverlay').remove();
+  initBrowser();
   phone.setActive(wantsPhone());
   syncMonitor();
   requestAnimationFrame(frame);

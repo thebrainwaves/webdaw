@@ -1,4 +1,4 @@
-# Auduio (v0.3.1)
+# Auduio (v0.4.0)
 
 Auduio was called WebDAW until v0.3.1. Saved projects and settings carry over automatically, and old `.webdaw.zip` files still import; new exports are `.auduio.zip`.
 
@@ -18,6 +18,9 @@ node tests/e2e-v3.mjs          # v0.3 phone mode, tutorial, theme, waveforms/cli
 node tests/e2e-v031.mjs        # v0.3.1 no-emoji UI scan, click-to-audition, clip preview, auto-monitor
 node tests/e2e-loop.mjs        # v0.3.1 loop brace, looped playback, loop-recording takes, phone loop controls
 node tests/e2e-rename.mjs      # v0.3.1 rename to Auduio: visible name, .auduio.zip export, old file import, storage migration
+node tests/randomize-unit.mjs  # v0.4 randomizer logic (musical/chaos, locks, safe levels), Node only
+node tests/e2e-v04.mjs         # v0.4 browser sidebar, MIDI effects, randomizer on every device (screenshots -> shots/)
+node tests/e2e-plugins.mjs     # v0.4 plugin hosting: this UI driving the real native engine + Surge XT (skips if not built)
 ```
 The mic needs HTTPS or localhost. GitHub Pages serves over HTTPS.
 
@@ -45,6 +48,20 @@ Publish the contents of `dist/`. Every path is relative, so the app works from a
 - `src/js/ui/phone.js`: simple phone layout (Record / Tracks / Mix / Effects / More)
 - `src/js/ui/tutorial.js`: interactive first-run tutorial
 - `src/js/midi.js`, `ui/pianoroll.js`, `history.js`, `security.js`, `validate.js`: Web MIDI, piano roll, undo/redo, PIN/encryption, import validation
+
+## What's new in v0.4
+- **Browser sidebar** (desktop layouts; press B or the arrow to collapse it to an icon rail). It lists Instruments, MIDI Effects, Audio Effects, Racks and Plugins, with search. Drag an item onto a track, double-click it, or use its + button. Items dropped on empty space create a fitting new track.
+- **MIDI effects** in front of the instrument on MIDI tracks: Arpeggiator (synced to the transport, also works while stopped), Chord, Scale (follows the song key), Note Length, Velocity and Random.
+- **Randomizer on every device** (instruments, MIDI effects, audio effects, rack chains, plugins):
+  - A dice button randomizes the device. The options arrow sets the amount and switches between Musical and Chaos.
+  - Per-parameter locks (lock icon on the knob, or chips in the options).
+  - "Randomize chain" and "Randomize track". Every randomize is one undo step.
+  - Musical mode keeps output levels where they are, keeps feedback, resonance and drive in a safe range, uses musical intervals for transpose, and balances EQ boosts.
+- **Plugins (desktop app only):**
+  - Loads VST3 plugins (AU on macOS) through a native audio engine sidecar, and scans plugin folders in separate processes.
+  - The plugin's own window opens from its device card. The card also has a parameter list with search, randomize, macros, MIDI learn and automation recording.
+  - The web app, Android and iOS show the Plugins section as desktop-only.
+  - See `apps/docs/PLUGIN-HOSTING.md`.
 
 ## What's new in v0.3.1
 - Renamed to Auduio. The visible name, manifest, export extension (`.auduio.zip`, `.auduio.enc`) and the desktop and mobile app ids all changed. Projects saved in the old `webdaw` IndexedDB database are copied into the new `auduio` one the first time you open it, and the old database is left untouched. Settings saved under the old `webdaw.*` keys are copied too. The project file format id stays `webdaw-project`, so older versions can still open new files; `auduio-project` is also accepted.

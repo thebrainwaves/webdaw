@@ -4,6 +4,7 @@ import { createInstrument } from './instruments.js';
 import { Adaptive } from './adaptive.js';
 import { KeyFollower } from './keyfollow.js';
 import { TempoAnalyzer, TempoFollower } from './tempo.js';
+import { MidiFxChain } from './midifx.js';
 
 const dbToLin = (db) => (db <= -60 ? 0 : Math.pow(10, db / 20));
 
@@ -48,7 +49,7 @@ export class Engine {
     this.master.meter.connect(ctx.destination);
     this.scopeAn = ctx.createAnalyser(); this.scopeAn.fftSize = 2048; this.master.out.connect(this.scopeAn);
     this.metroGain = ctx.createGain(); this.metroGain.gain.value = 0.5; this.metroGain.connect(ctx.destination);
-    this._sched = setInterval(() => this.schedulerTick(), 25);
+    this._sched = setInterval(() => { this.schedulerTick(); this.midiFxTick(); }, 25);
     this._sense = setInterval(() => this.senseTick(), 50);
     this.autoRec = { threshold: -40, preroll: 1, state: 'off' };
     this.keySum = ctx.createGain(); this.keyFollower = new KeyFollower(ctx, this.keySum);
@@ -164,9 +165,28 @@ export class Engine {
     const n = this.tracks.get(t.id); if (!n) return;
     if (n.inst) { n.inst.dispose(); n.inst = null; }
     if (t.kind !== 'midi') return;
+    // hosted plugin instrument (desktop app): notes go to the native engine instead of a Web Audio synth.
+    // t.inst is kept untouched so removing the plugin brings the previous synth back.
+    const native = this.instrumentFactory && this.instrumentFactory(this.ctx, t);
+    if (native) { n.inst = native; n.inst.output.connect(n.input); n.midi = new MidiFxChain(this, t, n.inst); return; }
     n.inst = createInstrument(this.ctx, t.inst);
-    t.inst = { type: n.inst.type, values: n.inst.values };
+    const locks = t.inst && t.inst.type === n.inst.type && t.inst.locks;
+    t.inst = { type: n.inst.type, values: n.inst.values }; if (locks) t.inst.locks = locks;
     n.inst.output.connect(n.input);
+    n.midi = new MidiFxChain(this, t, n.inst);
+  }
+  // MIDI effects chain (t.midiFx) changed: rebuild the chain in front of the instrument
+  setMidiFx(t) {
+    const n = this.tracks.get(t.id); if (!n || !n.midi) return;
+    n.midi.track = t; n.midi.sync(); n.midi.allOff();
+  }
+  // notes into a MIDI track: through its MIDI effects, then the instrument
+  notes(trackId) { const n = this.tracks.get(trackId); return n && (n.midi || n.inst); }
+  // arpeggiator & co. need a clock also while stopped (live playing)
+  midiFxTick() {
+    if (!this.ctx || !this.project) return;
+    const now = this.ctx.currentTime, to = now + 0.1;
+    this.tracks.forEach((n) => { if (n.midi && n.midi.active) n.midi.tick(Math.max(now, n.midiFxWM || now), to); n.midiFxWM = to; });
   }
   syncAdaptive(t) {
     const n = this.tracks.get(t.id); if (!n) return;
@@ -423,7 +443,7 @@ export class Engine {
     if (want && cur && want.start === cur.start && want.end === cur.end) { this.emit('loop'); return; }
     // re-anchor at the current position with the new loop
     const pos = this.position();
-    this.playing = false; this.tracks.forEach((n) => { this.stopTrackSources(n, 0, false); if (n.inst && !n.sessionMidi) n.inst.allOff(); });
+    this.playing = false; this.tracks.forEach((n) => { this.stopTrackSources(n, 0, false); if (n.inst && !n.sessionMidi) (n.midi || n.inst).allOff(); });
     this.startPos = Math.max(0, pos); this.play(null, 0, true);
     this.emit('loop');
   }
@@ -455,7 +475,7 @@ export class Engine {
     if (this.recording) this.stopRecording();
     const pos = this.position();
     this.playing = false; this.loopSpan = null;
-    this.tracks.forEach((n) => { this.stopTrackSources(n, 0, true); n.queued = null; if (n.inst) n.inst.allOff(); });
+    this.tracks.forEach((n) => { this.stopTrackSources(n, 0, true); n.queued = null; if (n.inst) (n.midi || n.inst).allOff(); });
     if (this.autoRec.state === 'waiting') this.cancelAutoRecord();
     // pressing stop while stopped returns to start (like most DAWs)
     this.startPos = pos === this.startPos ? 0 : pos;
@@ -463,7 +483,7 @@ export class Engine {
   }
   setPosition(pos) {
     const was = this.playing;
-    if (was) { this.playing = false; this.tracks.forEach((n) => { this.stopTrackSources(n, 0, false); if (n.inst && !n.sessionMidi) n.inst.allOff(); }); }
+    if (was) { this.playing = false; this.tracks.forEach((n) => { this.stopTrackSources(n, 0, false); if (n.inst && !n.sessionMidi) (n.midi || n.inst).allOff(); }); }
     this.startPos = Math.max(0, pos);
     if (was) this.play();
     this.emit('transport');
@@ -734,7 +754,7 @@ export class Engine {
           const k0 = Math.floor((from - L.start) / L.loopLen), k1 = Math.floor((to - L.start) / L.loopLen);
           for (let k = Math.max(0, k0); k <= k1; k++) for (const nt of L.clip.notes) {
             const tn = L.start + k * L.loopLen + nt.t * bd;
-            if (tn >= from && tn < to && tn < L.stopAt && nt.t * bd < L.loopLen) n.inst.playNote(nt.n, nt.v, tn, Math.min(nt.d * bd, L.stopAt - tn));
+            if (tn >= from && tn < to && tn < L.stopAt && nt.t * bd < L.loopLen) (n.midi || n.inst).playNote(nt.n, nt.v, tn, Math.min(nt.d * bd, L.stopAt - tn));
           }
         }
         continue;
@@ -747,7 +767,7 @@ export class Engine {
           for (const nt of c.notes) {
             const off = nt.t * bd - (c.offset || 0); if (off < 0 || off >= c.duration) continue;
             const pn = c.start + off;
-            if (pn >= p0 && pn < p1) n.inst.playNote(nt.n, nt.v, sg.c0 + (pn - p0), Math.min(nt.d * bd, c.duration - off, lpEnd - pn));
+            if (pn >= p0 && pn < p1) (n.midi || n.inst).playNote(nt.n, nt.v, sg.c0 + (pn - p0), Math.min(nt.d * bd, c.duration - off, lpEnd - pn));
           }
         }
       }

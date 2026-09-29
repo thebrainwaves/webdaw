@@ -5,8 +5,9 @@ import { EFFECT_TYPES, RACK_LIMITS } from './audio/effects.js';
 import { INSTRUMENT_TYPES } from './audio/instruments.js';
 import { INSTRUMENTS, ROLES } from './audio/presets.js';
 import { SCALES } from './audio/pitchdsp.js';
+import { MIDI_FX_TYPES } from './audio/midifx.js';
 
-export const LIMITS = { tracks: 128, fxPerTrack: 16, clipsPerTrack: 5000, notesPerClip: 20000, scenes: 64, midiMap: 256 };
+export const LIMITS = { tracks: 128, fxPerTrack: 16, clipsPerTrack: 5000, notesPerClip: 20000, scenes: 64, midiMap: 256, midiFxPerTrack: 8, pluginsPerTrack: 8, pluginParams: 4096, pluginState: 8 * 1024 * 1024, pluginAutoPoints: 20000 };
 const ID_RE = /^[A-Za-z0-9_-]{1,48}$/;
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 class VErr extends Error {}
@@ -44,12 +45,46 @@ export function validateRack(f) {
   }
   return { chains, macroMap };
 }
+// randomizer locks: list of parameter keys that the randomizer must not touch
+function locks(v, defs) { if (!Array.isArray(v)) return null; const ks = v.filter((k) => defs.some((p) => p.key === k)).slice(0, 64); return ks.length ? ks : null; }
+function midiFxList(list) {
+  return arr(list, LIMITS.midiFxPerTrack, 'MIDI effects').map((f) => {
+    if (!f || typeof f !== 'object' || !MIDI_FX_TYPES[f.type]) fail('unknown MIDI effect type');
+    const defs = MIDI_FX_TYPES[f.type].params, out = { type: f.type, enabled: f.enabled !== false, values: params(defs, f.values) };
+    const L = locks(f.locks, defs); if (L) out.locks = L;
+    return out;
+  });
+}
+// hosted plugins (desktop app): the plugin itself lives in the native engine; the project keeps its identity,
+// an opaque base64 state chunk (size-capped), touched parameter values (index -> 0..1), locks, macros, automation
+const pidx = (k) => { const i = Number(k); return Number.isInteger(i) && i >= 0 && i < LIMITS.pluginParams ? String(i) : null; };
+function pluginList(list) {
+  return arr(list, LIMITS.pluginsPerTrack, 'plugins').map((pl) => {
+    if (!pl || typeof pl !== 'object' || typeof pl.uid !== 'string' || !pl.uid) fail('bad plugin entry');
+    const out = { id: str(pl.id, 40, '').replace(/[^\w-]/g, '') || 'pl' + Math.random().toString(36).slice(2, 8), uid: str(pl.uid, 300), name: str(pl.name, 80, 'Plugin'), format: ['VST3', 'AudioUnit', 'CLAP'].includes(pl.format) ? pl.format : 'VST3',
+      vendor: str(pl.vendor || '', 80), instrument: bool(pl.instrument), enabled: pl.enabled !== false, values: {} };
+    if (typeof pl.file === 'string') out.file = str(pl.file, 1024);
+    if (typeof pl.state === 'string' && pl.state.length <= LIMITS.pluginState && /^[A-Za-z0-9+/=]*$/.test(pl.state)) out.state = pl.state;
+    for (const [k, v] of Object.entries(pl.values && typeof pl.values === 'object' ? pl.values : {}).slice(0, LIMITS.pluginParams)) { const i = pidx(k); if (i != null) out.values[i] = num(v, 0, 1, 0); }
+    if (Array.isArray(pl.locks)) { const L = pl.locks.map(pidx).filter((x) => x != null).slice(0, LIMITS.pluginParams); if (L.length) out.locks = L; }
+    out.macros = arr(pl.macros, 8, 'plugin macros').map((m, mi) => ({ name: str(m && m.name, 24, 'Macro ' + (mi + 1)), value: num(m && m.value, 0, 1, 0),
+      targets: arr(m && m.targets, 32, 'macro targets').map((x) => ({ i: int(x && x.i, 0, LIMITS.pluginParams - 1, 0), min: num(x && x.min, 0, 1, 0), max: num(x && x.max, 0, 1, 1) })) }));
+    out.auto = {}; let pts = 0;
+    for (const [k, lane] of Object.entries(pl.auto && typeof pl.auto === 'object' ? pl.auto : {}).slice(0, 64)) {
+      const i = pidx(k); if (i == null || !Array.isArray(lane)) continue;
+      const L = lane.slice(0, Math.max(0, LIMITS.pluginAutoPoints - pts)).filter((q) => Array.isArray(q)).map((q) => [num(q[0], 0, 100000, 0), num(q[1], 0, 1, 0)]).sort((a, b) => a[0] - b[0]);
+      pts += L.length; if (L.length) out.auto[i] = L;
+    }
+    return out;
+  });
+}
 function fxList(list, allowRack = true, max = LIMITS.fxPerTrack) {
   return arr(list, max, 'effects').map((f) => {
     if (!f || typeof f !== 'object' || !EFFECT_TYPES[f.type]) fail('unknown effect type');
     if (f.type === 'rack' && !allowRack) fail('racks cannot be nested');
     const out = { type: f.type, enabled: f.enabled !== false, values: params(EFFECT_TYPES[f.type].params, f.values) };
     if (f.type === 'rack') Object.assign(out, validateRack(f));
+    const L = locks(f.locks, EFFECT_TYPES[f.type].params); if (L) out.locks = L;
     return out;
   });
 }
@@ -120,13 +155,18 @@ export function validateProject(raw) {
     if (kind === 'midi') {
       const it = t.inst && INSTRUMENT_TYPES[t.inst.type] ? t.inst.type : 'synth';
       nt.inst = { type: it, values: params(INSTRUMENT_TYPES[it].params, t.inst && t.inst.values) };
+      const L = locks(t.inst && t.inst.locks, INSTRUMENT_TYPES[it].params); if (L) nt.inst.locks = L;
+      nt.midiFx = midiFxList(t.midiFx);
+      const pl = pluginList(t.plugins); if (pl.length) nt.plugins = pl;
     }
     p.tracks.push(nt);
   }
   for (const t of p.tracks) if (t.groupId && !p.tracks.some((g) => g.id === t.groupId && g.kind === 'group' && g.id !== t.id)) t.groupId = null;
   for (const m of arr(raw.midiMap, LIMITS.midiMap, 'MIDI mappings')) {
     if (!m || !seen.has(m.trackId) && m.trackId !== 'master') continue;
-    const target = m.fx === 'inst' ? 'inst' : int(m.fx, 0, LIMITS.fxPerTrack - 1, 0);
+    const plug = typeof m.fx === 'string' && /^plugin:[\w-]{1,40}$/.test(m.fx);
+    const target = m.fx === 'inst' ? 'inst' : plug ? m.fx : int(m.fx, 0, LIMITS.fxPerTrack - 1, 0);
+    if (plug && pidx(m.key) == null) continue;
     p.midiMap.push({ ch: int(m.ch, 0, 15, 0), cc: int(m.cc, 0, 127, 0), trackId: m.trackId, fx: target, key: str(m.key, 32) });
   }
   return { project: p, bufferIds };

@@ -6,7 +6,9 @@ import fs from 'node:fs'; import path from 'node:path';
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const PORT = +(process.env.PORT || 8765), BASE = '/daw/';
 const URL_ = `http://localhost:${PORT}${BASE}`;
-const BROWSER = process.env.DAW_BROWSER || 'chromium';
+const DB_ = process.env.DAW_BROWSER || '';
+const BROWSER = /[\\/]/.test(DB_) ? 'chromium' : DB_ || 'chromium'; // DAW_BROWSER: 'firefox' | 'chromium' | path to a Chromium binary
+const CHROME_PATH = /[\\/]/.test(DB_) ? DB_ : process.env.CHROME;
 const isFF = BROWSER === 'firefox';
 const results = [];
 const ok = (name, cond, info = '') => { results.push({ name, pass: !!cond, info }); console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${info ? '  — ' + info : ''}`); };
@@ -16,7 +18,7 @@ await new Promise((r) => server.stdout.once('data', r));
 
 const browser = isFF
   ? await firefox.launch({ headless: true, firefoxUserPrefs: { 'media.navigator.streams.fake': true, 'media.navigator.permission.disabled': true, 'media.autoplay.default': 0, 'media.autoplay.block-webaudio': false } })
-  : await chromium.launch({ headless: true, ...(process.env.CHROME ? { executablePath: process.env.CHROME } : {}), args: [
+  : await chromium.launch({ headless: true, ...(CHROME_PATH ? { executablePath: CHROME_PATH } : {}), args: [
   '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--no-sandbox'] });
 console.log('Browser:', BROWSER, browser.version());
 const errors = [];

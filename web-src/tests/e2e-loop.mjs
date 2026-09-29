@@ -21,7 +21,7 @@ async function newPage(opts = {}, prefs = { guideDone: true, tutorialDone: true,
   const ctx = await browser.newContext({ permissions: ['microphone'], ...opts });
   await ctx.addInitScript((prefs) => { if (prefs && !localStorage.getItem('webdaw.prefs')) localStorage.setItem('webdaw.prefs', JSON.stringify(prefs)); }, prefs);
   const page = await ctx.newPage();
-  page.on('console', (m) => { if (m.type() === 'error' && !/Refused to execute inline script/.test(m.text())) errors.push(`[console] ${m.text()}`); });
+  page.on('console', (m) => { if (m.type() === 'error' && !/Refused to execute inline script|Executing inline script violates/.test(m.text())) errors.push(`[console] ${m.text()}`); });
   page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
   return { ctx, page };
 }

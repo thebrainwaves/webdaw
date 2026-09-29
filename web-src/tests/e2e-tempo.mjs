@@ -11,7 +11,7 @@ const shots = path.join(ROOT, 'screenshots/v3'); fs.mkdirSync(shots, { recursive
 const results = []; const ok = (name, c, d = '') => { results.push({ name, pass: !!c, detail: d }); console.log(`${c ? 'PASS' : 'FAIL'}  ${name}${d ? '  — ' + d : ''}`); };
 const server = spawn('node', [path.join(ROOT, 'tools/serve.mjs'), path.join(ROOT, 'dist'), String(PORT), BASE], { stdio: 'pipe' });
 await new Promise((r) => server.stdout.once('data', r));
-const browser = await chromium.launch({ headless: true, args: ['--autoplay-policy=no-user-gesture-required', '--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] });
+const browser = await chromium.launch({ headless: true, ...(process.env.DAW_BROWSER ? { executablePath: process.env.DAW_BROWSER } : {}), args: ['--autoplay-policy=no-user-gesture-required', '--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] });
 const errors = [];
 async function newPage(viewport = { width: 1280, height: 800 }, extra = {}) {
   const ctx = await browser.newContext({ viewport, ...extra });

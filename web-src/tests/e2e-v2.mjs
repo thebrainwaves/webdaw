@@ -11,7 +11,7 @@ const ok = (name, cond, info = '') => { results.push({ name, pass: !!cond, info 
 const shots = path.join(ROOT, 'screenshots', 'v2'); fs.mkdirSync(shots, { recursive: true });
 const server = spawn('node', [path.join(ROOT, 'tools/serve.mjs'), path.join(ROOT, 'dist'), String(PORT), BASE], { stdio: 'pipe' });
 await new Promise((r) => server.stdout.once('data', r));
-const browser = await chromium.launch({ headless: true, ...(process.env.CHROME ? { executablePath: process.env.CHROME } : {}), args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--no-sandbox'] });
+const browser = await chromium.launch({ headless: true, ...((process.env.DAW_BROWSER || process.env.CHROME) ? { executablePath: process.env.DAW_BROWSER || process.env.CHROME } : {}), args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--no-sandbox'] });
 const errors = [];
 async function newPage(opts = {}, { midi = true, prefs = { guideDone: true, tutorialDone: true, phoneMode: 'off' } } = {}) {
   const ctx = await browser.newContext({ permissions: ['microphone'], acceptDownloads: true, ...opts });
@@ -27,7 +27,7 @@ async function newPage(opts = {}, { midi = true, prefs = { guideDone: true, tuto
     }
   }, { midi, prefs });
   const page = await ctx.newPage();
-  page.on('console', (m) => { if (m.type() === 'error' && !/Refused to execute inline script/.test(m.text())) errors.push(`[console] ${m.text()}`); });
+  page.on('console', (m) => { if (m.type() === 'error' && !/Refused to execute inline script|Executing inline script violates/.test(m.text())) errors.push(`[console] ${m.text()}`); });
   page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
   return { ctx, page };
 }
