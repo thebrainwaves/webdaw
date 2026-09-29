@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; font-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>WebDAW</title>
 <meta name="description" content="Browser-based DAW: session clips, arrangement recording, built-in effects, auto-mix.">
@@ -17,19 +18,23 @@
 </head>
 <body>
 <header id="topbar">
-  <div class="brand"><span class="logo">◆</span><span id="projName" class="proj-name">WebDAW</span><span id="saveState" class="save-state"></span></div>
+  <div class="brand"><span class="logo">◆</span><span id="projName" class="proj-name">WebDAW</span><span id="saveState" class="save-state" title="• = unsaved changes (auto-saves in a moment)"></span></div>
   <div class="transport">
     <button id="btnPlay" title="Play/Stop (Space)" aria-label="Play">▶</button>
     <button id="btnStop" title="Stop (press twice: return to start)" aria-label="Stop">■</button>
-    <button id="btnRec" class="rec" title="Arrangement record (R)" aria-label="Record">●</button>
-    <button id="btnMetro" title="Metronome (M)" aria-label="Metronome" class="metro">MET</button>
-    <label class="bpm" title="Tempo">BPM <input id="bpm" type="number" min="40" max="300" value="120" inputmode="numeric"></label>
-    <div id="posDisplay" class="pos">1.1.1</div>
+    <button id="btnRec" class="rec" title="Arrangement record (R): records all armed tracks onto the timeline" aria-label="Record">●</button>
+    <button id="btnAutoRec" class="autorec adv" title="Auto-record: waits until an armed input gets loud, then records (with pre-roll). Threshold in Preferences." aria-label="Auto record">AUTO</button>
+    <button id="btnMetro" title="Metronome (M)" aria-label="Metronome" class="metro adv">MET</button>
+    <label class="bpm" title="Tempo in beats per minute">BPM <input id="bpm" type="number" min="40" max="300" value="120" inputmode="numeric"></label>
+    <div id="posDisplay" class="pos" title="Position: bar.beat.sixteenth">1.1.1</div>
   </div>
-  <div class="views"><button data-view="session" class="on">Session</button><button data-view="arrange">Arrange</button></div>
-  <button id="btnAutoMix" class="automix" title="Detect instruments and apply mix presets">Auto-Mix</button>
+  <div class="hist"><button id="btnUndo" class="btn-undo" title="Undo (Ctrl/⌘+Z)" aria-label="Undo" disabled>↶</button><button id="btnRedo" class="btn-redo" title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo" disabled>↷</button></div>
+  <div class="views"><button data-view="session" class="on" title="Session view: clip launcher and mixer">Session</button><button data-view="arrange" title="Arrangement view: timeline">Arrange</button></div>
+  <button id="btnAutoMix" class="automix" title="Auto-Mix setup: tell the app what each track is (or let it suggest), then it sets up EQ, compression and effects">Auto-Mix</button>
+  <button id="btnEasy" class="tog" title="Easy Mode: fewer controls, bigger labels">Easy</button>
+  <button id="btnHelp" class="tog" title="Help mode: tap any control to see what it does" aria-label="Help">?</button>
   <canvas id="masterMeterTop" class="meter h top" aria-label="Master level"></canvas>
-  <button id="btnMenu" class="menu-btn" aria-label="Menu">☰</button>
+  <button id="btnMenu" class="menu-btn" aria-label="Menu" title="Menu: projects, export/import, settings, preferences">☰</button>
   <div id="menu" class="dropdown"></div>
 </header>
 <main id="main">
@@ -49,9 +54,18 @@
     <p id="startMsg" class="hint">Audio starts after a tap (required by iOS/Android browsers). Microphone access is only requested when you arm a track.</p>
   </div>
 </div>
+<div id="lockOverlay" hidden>
+  <div class="start-card">
+    <div class="logo big">◆</div>
+    <h2>Locked</h2>
+    <input id="pinInput" type="password" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="PIN" aria-label="PIN">
+    <button id="pinBtn" class="primary">Unlock</button>
+    <p id="pinMsg" class="hint">Casual PIN lock — not encryption.</p>
+  </div>
+</div>
 <dialog id="dlg"></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
-<input type="file" id="fileProject" accept=".zip,.webdaw,.json,application/zip,application/json" hidden>
+<input type="file" id="fileProject" accept=".zip,.webdaw,.json,.enc,application/zip,application/json,application/octet-stream" hidden>
 <input type="file" id="fileAudio" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac" multiple hidden>
 <script type="module" src="./js/main.js"></script>
 </body>

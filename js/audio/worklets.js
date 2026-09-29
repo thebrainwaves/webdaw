@@ -1,3 +1,4 @@
+import { PitchCorrectorDSP } from './pitchdsp.js';
 // AudioWorklet processors: recorder, meter, noise gate.
 // Loaded once via audioWorklet.addModule().
 
@@ -146,3 +147,23 @@ class GateProcessor extends AudioWorkletProcessor {
   }
 }
 registerProcessor('gate-processor', GateProcessor);
+
+// Pitch correction (shared DSP class, see pitchdsp.js)
+class PitchProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.dsp = new PitchCorrectorDSP(sampleRate);
+    this.dsp.onReport = (r) => this.port.postMessage(r);
+    this.port.onmessage = (e) => { const m = e.data; if (m && m.type === 'set') this.dsp.set(m.key, m.value); };
+    this.mono = new Float32Array(128);
+  }
+  process(inputs, outputs) {
+    const inp = inputs[0], out = outputs[0];
+    if (!inp.length) { return true; }
+    let src = inp[0];
+    if (inp.length > 1) { if (this.mono.length !== src.length) this.mono = new Float32Array(src.length); for (let i = 0; i < src.length; i++) this.mono[i] = 0.5 * (inp[0][i] + inp[1][i]); src = this.mono; }
+    this.dsp.process(src, out[0], out[1]);
+    return true;
+  }
+}
+registerProcessor('pitch-processor', PitchProcessor);

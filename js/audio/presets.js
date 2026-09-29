@@ -10,6 +10,7 @@ const dist = (v) => ({ type: 'distortion', values: v });
 const delay = (v) => ({ type: 'delay', values: v });
 const verb = (v) => ({ type: 'reverb', values: v });
 const lim = (v) => ({ type: 'limiter', values: v });
+const tune = (v) => ({ type: 'pitch', values: { keySource: 'global', ...v } });
 
 export const PRESETS = {
   guitar: {
@@ -17,22 +18,32 @@ export const PRESETS = {
     'Crunch Amp':       [dist({ voicing: 'crunch', drive: 45, tight: 90, bass: 1, mid: 1, treble: 1, presence: 2, cab: 'open', gate: -75 }), eq({ hpf: 90, m1Freq: 400, m1Gain: -2, lpf: 11000 }), comp({ threshold: -16, ratio: 2, attack: 20, release: 120, makeup: 1 }), verb({ space: 'room', decay: 0.9, mix: 10 })],
     'High Gain Rhythm': [dist({ voicing: 'highgain', drive: 60, tight: 140, bass: 2, mid: -2, treble: 2, presence: 3, cab: 'closed', gate: -62 }), eq({ hpf: 100, m1Freq: 250, m1Gain: -3, m1Q: 1.4, m2Freq: 3500, m2Gain: 1.5, lpf: 10000 }), comp({ threshold: -14, ratio: 2, attack: 25, release: 100 }), verb({ space: 'room', decay: 0.7, mix: 6 })],
     'Death Metal':      [dist({ voicing: 'death', drive: 80, tight: 200, bass: 3, mid: -5, treble: 3, presence: 5, cab: 'closed', gate: -55 }), eq({ hpf: 110, m1Freq: 500, m1Gain: -3, m1Q: 1.2, m2Freq: 2800, m2Gain: 2, lpf: 9000 }), comp({ threshold: -12, ratio: 2, attack: 30, release: 80 })],
+    'Acoustic':         [eq({ hpf: 80, m1Freq: 220, m1Gain: -3, m1Q: 1.2, m2Freq: 5000, m2Gain: 2, highFreq: 12000, highGain: 2 }), comp({ threshold: -20, ratio: 3, attack: 12, release: 150, makeup: 3 }), verb({ space: 'chamber', decay: 1.3, mix: 12 })],
     'Lead':             [dist({ voicing: 'highgain', drive: 70, tight: 110, mid: 3, presence: 2, cab: 'closed', gate: -70 }), eq({ hpf: 110, m2Freq: 1800, m2Gain: 2 }), delay({ sync: '1/4', feedback: 35, mix: 22, pingpong: 'on' }), verb({ space: 'hall', decay: 2.2, mix: 18 })],
   },
   bass: {
     'Tight DI':  [eq({ hpf: 35, lowFreq: 80, lowGain: 2, m1Freq: 250, m1Gain: -3, m1Q: 1.2, m2Freq: 800, m2Gain: 1.5, highFreq: 5000, highGain: -2, lpf: 9000 }), comp({ threshold: -22, ratio: 4, attack: 8, release: 120, makeup: 4 })],
     'Growl':     [dist({ voicing: 'overdrive', drive: 30, tight: 40, bass: 3, mid: 2, treble: -2, presence: 0, cab: 'off', gate: -80, level: 2 }), eq({ hpf: 35, m1Freq: 250, m1Gain: -3, m2Freq: 1200, m2Gain: 3 }), comp({ threshold: -20, ratio: 5, attack: 5, release: 100, makeup: 3 })],
+    'Amp':       [dist({ voicing: 'overdrive', drive: 15, tight: 30, bass: 2, mid: 3, treble: -3, presence: -1, cab: 'combo', gate: -85, level: 3 }), eq({ hpf: 35, m1Freq: 250, m1Gain: -2, m2Freq: 900, m2Gain: 2 }), comp({ threshold: -20, ratio: 4, attack: 10, release: 120, makeup: 3 })],
     'Sub Heavy': [eq({ hpf: 28, lowFreq: 60, lowGain: 4, m1Freq: 350, m1Gain: -4, highGain: -4, lpf: 5000 }), comp({ threshold: -24, ratio: 6, attack: 10, release: 150, makeup: 5 })],
   },
   drums: {
+    'Kick':       [eq({ hpf: 30, lowFreq: 60, lowGain: 4, m1Freq: 380, m1Gain: -6, m1Q: 1.4, m2Freq: 4000, m2Gain: 4, m2Q: 1.2, highGain: -2, lpf: 14000 }), comp({ threshold: -18, ratio: 4, attack: 15, release: 80, makeup: 3 })],
+    'Snare':      [eq({ hpf: 90, lowFreq: 200, lowGain: 2, m1Freq: 700, m1Gain: -3, m1Q: 1.2, m2Freq: 5000, m2Gain: 3, highFreq: 10000, highGain: 2 }), comp({ threshold: -20, ratio: 4, attack: 8, release: 90, makeup: 3 }), verb({ space: 'plate', decay: 1.2, mix: 12 })],
+    'Hi-Hat':     [eq({ hpf: 320, m1Freq: 800, m1Gain: -2, m2Freq: 6000, m2Gain: 1, highFreq: 12000, highGain: 2 }), comp({ threshold: -18, ratio: 2, attack: 2, release: 60, makeup: 1 })],
+    'Toms':       [eq({ hpf: 60, lowFreq: 100, lowGain: 3, m1Freq: 450, m1Gain: -5, m1Q: 1.3, m2Freq: 4000, m2Gain: 3 }), comp({ threshold: -20, ratio: 3, attack: 10, release: 120, makeup: 3 }), verb({ space: 'room', decay: 0.9, mix: 10 })],
+    'Overheads':  [eq({ hpf: 150, m1Freq: 500, m1Gain: -2, m2Freq: 3500, m2Gain: -1, highFreq: 11000, highGain: 3 }), comp({ threshold: -16, ratio: 2, attack: 25, release: 150, makeup: 1 })],
+    'Room':       [eq({ hpf: 60, m1Freq: 400, m1Gain: -3, highFreq: 8000, highGain: -2 }), comp({ threshold: -28, ratio: 8, attack: 5, release: 60, makeup: 8, mix: 100 })],
     'Punchy Bus': [eq({ hpf: 30, lowFreq: 70, lowGain: 2.5, m1Freq: 400, m1Gain: -3, m1Q: 1, m2Freq: 4000, m2Gain: 2, highFreq: 10000, highGain: 2.5 }), comp({ threshold: -20, ratio: 4, attack: 20, release: 100, makeup: 4, mix: 60 }), verb({ space: 'room', decay: 0.6, mix: 8 }), lim({ input: 2, ceiling: -1 })],
     'Big Room':   [eq({ hpf: 30, lowGain: 2, m1Freq: 500, m1Gain: -2, highGain: 3 }), comp({ threshold: -24, ratio: 6, attack: 10, release: 80, makeup: 6, mix: 50 }), verb({ space: 'chamber', decay: 1.3, mix: 16 })],
     'Metal Kit':  [eq({ hpf: 35, lowFreq: 60, lowGain: 3, m1Freq: 350, m1Gain: -5, m1Q: 1.3, m2Freq: 5000, m2Gain: 4, highGain: 2 }), comp({ threshold: -18, ratio: 5, attack: 5, release: 60, makeup: 4, mix: 70 }), lim({ input: 3, ceiling: -1 })],
   },
   vocals: {
-    'Pop Vocal':   [eq({ hpf: 100, m1Freq: 300, m1Gain: -2.5, m1Q: 1.2, m2Freq: 3500, m2Gain: 2.5, highFreq: 10000, highGain: 3 }), comp({ threshold: -22, ratio: 4, attack: 5, release: 90, makeup: 5 }), delay({ sync: '1/4', feedback: 20, mix: 10, tone: 3500, pingpong: 'on' }), verb({ space: 'plate', decay: 1.8, mix: 16, predelay: 30 })],
-    'Rock Vocal':  [eq({ hpf: 110, m1Freq: 400, m1Gain: -3, m2Freq: 2500, m2Gain: 3, highGain: 2 }), comp({ threshold: -20, ratio: 6, attack: 3, release: 60, makeup: 6 }), dist({ voicing: 'overdrive', drive: 5, tight: 150, cab: 'off', gate: -90, level: 8 }), verb({ space: 'room', decay: 1.1, mix: 12 })],
+    'Pop Vocal':   [tune({ speed: 45, humanize: 40, amount: 80 }), eq({ hpf: 100, m1Freq: 300, m1Gain: -2.5, m1Q: 1.2, m2Freq: 3500, m2Gain: 2.5, highFreq: 10000, highGain: 3 }), comp({ threshold: -22, ratio: 4, attack: 5, release: 90, makeup: 5 }), delay({ sync: '1/4', feedback: 20, mix: 10, tone: 3500, pingpong: 'on' }), verb({ space: 'plate', decay: 1.8, mix: 16, predelay: 30 })],
+    'Rock Vocal':  [tune({ speed: 80, humanize: 60, amount: 60 }), eq({ hpf: 110, m1Freq: 400, m1Gain: -3, m2Freq: 2500, m2Gain: 3, highGain: 2 }), comp({ threshold: -20, ratio: 6, attack: 3, release: 60, makeup: 6 }), dist({ voicing: 'overdrive', drive: 5, tight: 150, cab: 'off', gate: -90, level: 8 }), verb({ space: 'room', decay: 1.1, mix: 12 })],
+    'Backing':     [tune({ speed: 30, humanize: 30, amount: 90 }), eq({ hpf: 150, m1Freq: 350, m1Gain: -3, m2Freq: 3000, m2Gain: -1.5, highFreq: 10000, highGain: 2 }), comp({ threshold: -24, ratio: 5, attack: 5, release: 100, makeup: 5 }), verb({ space: 'plate', decay: 2.2, mix: 22, predelay: 20 })],
     'Scream':      [eq({ hpf: 150, m1Freq: 500, m1Gain: -3, m2Freq: 3000, m2Gain: 2, lpf: 12000 }), comp({ threshold: -16, ratio: 8, attack: 2, release: 50, makeup: 4 }), verb({ space: 'room', decay: 0.8, mix: 10 })],
+    'Hard Tune':   [tune({ speed: 0, humanize: 0, amount: 100 }), eq({ hpf: 110, m2Freq: 3500, m2Gain: 3, highGain: 3 }), comp({ threshold: -22, ratio: 5, attack: 3, release: 80, makeup: 5 }), delay({ sync: '1/8', feedback: 25, mix: 12, pingpong: 'on' }), verb({ space: 'plate', decay: 1.6, mix: 15 })],
     'Ambient':     [eq({ hpf: 120, m2Freq: 5000, m2Gain: 2, highGain: 3 }), comp({ threshold: -24, ratio: 3, attack: 10, release: 150, makeup: 4 }), delay({ sync: '1/4', feedback: 45, mix: 25, pingpong: 'on' }), verb({ space: 'hall', decay: 4, mix: 30 })],
   },
   keys: {
@@ -56,3 +67,26 @@ export const MASTER_PRESET = [
   { type: 'maximizer', values: { gain: 2, ceiling: -0.5, release: 80, character: 50 } },
   { type: 'limiter', values: { input: 0, ceiling: -0.3, release: 50 } },
 ];
+
+// Auto-Mix setup roles: what each track is recording. Each maps to an instrument class + preset.
+export const ROLES = {
+  auto:          { label: 'Auto (suggest)', group: '' },
+  drum_kick:     { label: 'Kick', group: 'Drums', instrument: 'drums', preset: 'Kick' },
+  drum_snare:    { label: 'Snare', group: 'Drums', instrument: 'drums', preset: 'Snare' },
+  drum_hihat:    { label: 'Hi-hat', group: 'Drums', instrument: 'drums', preset: 'Hi-Hat' },
+  drum_toms:     { label: 'Toms', group: 'Drums', instrument: 'drums', preset: 'Toms' },
+  drum_overheads:{ label: 'Overheads / cymbals', group: 'Drums', instrument: 'drums', preset: 'Overheads' },
+  drum_room:     { label: 'Room', group: 'Drums', instrument: 'drums', preset: 'Room' },
+  drum_kit:      { label: 'Full kit / drum bus', group: 'Drums', instrument: 'drums', preset: 'Punchy Bus' },
+  bass_di:       { label: 'Bass DI', group: 'Bass', instrument: 'bass', preset: 'Tight DI' },
+  bass_amp:      { label: 'Bass amp', group: 'Bass', instrument: 'bass', preset: 'Amp' },
+  gtr_clean:     { label: 'Guitar (clean / DI)', group: 'Guitars', instrument: 'guitar', preset: 'Clean (DI)' },
+  gtr_crunch:    { label: 'Guitar (crunch amp)', group: 'Guitars', instrument: 'guitar', preset: 'Crunch Amp' },
+  gtr_highgain:  { label: 'Guitar (high gain)', group: 'Guitars', instrument: 'guitar', preset: 'High Gain Rhythm' },
+  gtr_death:     { label: 'Guitar (death metal)', group: 'Guitars', instrument: 'guitar', preset: 'Death Metal' },
+  gtr_acoustic:  { label: 'Acoustic guitar', group: 'Guitars', instrument: 'guitar', preset: 'Acoustic' },
+  vox_lead:      { label: 'Lead vocal', group: 'Vocals', instrument: 'vocals', preset: 'Pop Vocal' },
+  vox_backing:   { label: 'Backing vocals', group: 'Vocals', instrument: 'vocals', preset: 'Backing' },
+  keys:          { label: 'Keys / piano', group: 'Keys', instrument: 'keys', preset: 'Piano' },
+  other:         { label: 'Other', group: 'Other', instrument: 'other', preset: 'Gentle Polish' },
+};

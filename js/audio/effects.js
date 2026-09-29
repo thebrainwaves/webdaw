@@ -1,5 +1,6 @@
 // Built-in effects implemented with native Web Audio nodes (+ an AudioWorklet gate).
 import { generateIR, IR_TYPES } from './ir.js';
+import { PitchCorrectorDSP, SCALES, NOTE_NAMES } from './pitchdsp.js';
 
 const dbToLin = (db) => Math.pow(10, db / 20);
 let uid = 0;
@@ -314,6 +315,7 @@ export class Reverb extends Effect {
 // ---------------------------------------------------------------- Amp / Distortion
 // Voicings define stage count, total gain range, pre-EQ and default character.
 export const VOICINGS = {
+  clean:     { label: 'Clean',     stages: 1, maxDb: 14, tight: 70, midF: 700, midG: 1, bias: 0.03 },
   overdrive: { label: 'Overdrive', stages: 1, maxDb: 30, tight: 80, midF: 800, midG: 5, bias: 0.15 },
   crunch:    { label: 'Crunch',    stages: 2, maxDb: 45, tight: 100, midF: 900, midG: 4, bias: 0.1 },
   highgain:  { label: 'High Gain', stages: 3, maxDb: 62, tight: 140, midF: 1000, midG: 6, bias: 0.08 },
@@ -339,7 +341,7 @@ function stageCurve(bias, hardness) {
 }
 
 export class Distortion extends Effect {
-  static get label() { return 'Amp / Distortion'; }
+  static get label() { return 'Distortion'; }
   static get params() {
     return [
       { key: 'voicing', label: 'Voice', type: 'select', options: Object.keys(VOICINGS), def: 'crunch' },
@@ -428,7 +430,232 @@ export class Distortion extends Effect {
   init(values) { super.init(values); this.rewire(); this.applyCab(); return this; }
 }
 
+// ---------------------------------------------------------------- Pitch correction (auto-tune style)
+export class PitchCorrect extends Effect {
+  static get label() { return 'Pitch Correct'; }
+  static get params() {
+    return [
+      { key: 'keySource', label: 'Key from', type: 'select', options: ['global', 'manual'], def: 'global' },
+      { key: 'root', label: 'Key', type: 'select', options: NOTE_NAMES, def: 'C' },
+      { key: 'scale', label: 'Scale', type: 'select', options: Object.keys(SCALES), def: 'major' },
+      { key: 'speed', label: 'Speed', min: 0, max: 400, def: 40, unit: 'ms', help: 'Retune speed: 0 = hard robotic snap, higher = more natural.' },
+      { key: 'humanize', label: 'Human', min: 0, max: 100, def: 30, unit: '%', help: 'Leaves small deviations (vibrato, scoops) partly uncorrected.' },
+      { key: 'amount', label: 'Amount', min: 0, max: 100, def: 100, unit: '%' },
+      { key: 'mix', label: 'Mix', min: 0, max: 100, def: 100, unit: '%' },
+    ];
+  }
+  constructor(ctx) {
+    super(ctx, 'pitch');
+    this.readout = { f0: 0, target: 0, targetNote: null, conf: 0, level: 0, shift: 0 };
+    this.history = [];
+    this.globalKey = { root: 0, scale: 'major' };
+    this.wetIn = ctx.createGain();
+    const onReport = (r) => { this.readout = r; this.history.push([r.f0 ? 69 + 12 * Math.log2(r.f0 / 440) : 0, r.target || 0]); if (this.history.length > 240) this.history.shift(); if (this.onSnap && r.targetNote != null && r.targetNote !== this._lastNote) this.onSnap(r.targetNote); this._lastNote = r.targetNote; };
+    try {
+      this.node = new AudioWorkletNode(ctx, 'pitch-processor', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+      this.node.port.onmessage = (e) => onReport(e.data);
+      this.send = (key, value) => this.node.port.postMessage({ type: 'set', key, value });
+      this.engineKind = 'AudioWorklet';
+    } catch (e) {
+      // fallback: same DSP on the main thread via ScriptProcessorNode (more latency/jank risk)
+      const dsp = new PitchCorrectorDSP(ctx.sampleRate); dsp.onReport = onReport;
+      this.node = ctx.createScriptProcessor(1024, 2, 2);
+      const mono = new Float32Array(1024);
+      this.node.onaudioprocess = (ev) => {
+        const ib = ev.inputBuffer, a = ib.getChannelData(0), b = ib.numberOfChannels > 1 ? ib.getChannelData(1) : a;
+        for (let i = 0; i < a.length; i++) mono[i] = 0.5 * (a[i] + b[i]);
+        dsp.process(mono, ev.outputBuffer.getChannelData(0), ev.outputBuffer.getChannelData(1));
+      };
+      this.send = (key, value) => dsp.set(key, value);
+      this.engineKind = 'ScriptProcessor fallback';
+    }
+    this.wetIn.connect(this.node).connect(this.output);
+  }
+  setGlobalKey(k) { if (k) { this.globalKey = k; this.pushKey(); } }
+  pushKey() {
+    const g = this.values.keySource !== 'manual';
+    this.send('root', g ? this.globalKey.root : Math.max(0, NOTE_NAMES.indexOf(this.values.root)));
+    this.send('scale', g ? this.globalKey.scale : this.values.scale);
+  }
+  apply(k, v) {
+    if (k === 'keySource' || k === 'root' || k === 'scale') this.pushKey();
+    else if (this.send) this.send(k, v);
+  }
+  dispose() { super.dispose(); try { this.node.disconnect(); if (this.node.port && this.node.port.close) this.node.port.close(); this.node.onaudioprocess = null; } catch (e) {} }
+}
+
+// ---------------------------------------------------------------- Modulation effects (tempo-syncable LFOs)
+export const LFO_SYNC = ['off', '4/1', '2/1', '1/1', '1/2', '1/4', '1/8', '1/16', '1/4t', '1/8t', '1/8d'];
+const LFO_BEATS = { '4/1': 16, '2/1': 8, '1/1': 4, '1/2': 2, '1/4': 1, '1/8': 0.5, '1/16': 0.25, '1/4t': 2 / 3, '1/8t': 1 / 3, '1/8d': 0.75 };
+class LfoEffect extends Effect {
+  constructor(ctx, type) { super(ctx, type); this.bpm = 120; this.lfo = ctx.createOscillator(); this.lfo.start(); }
+  setBpm(bpm) { this.bpm = bpm; this.applyRate(false); }
+  lfoHz() { const s = this.values.sync; return s && s !== 'off' && LFO_BEATS[s] ? 1 / ((60 / this.bpm) * LFO_BEATS[s]) : this.values.rate || 1; }
+  applyRate(i) { this.p(this.lfo.frequency, this.lfoHz(), i); }
+  dispose() { super.dispose(); try { this.lfo.stop(); } catch (e) {} }
+}
+export class Chorus extends LfoEffect {
+  static get label() { return 'Chorus'; }
+  static get params() {
+    return [
+      { key: 'rate', label: 'Rate', min: 0.05, max: 8, def: 0.6, unit: 'Hz', curve: 'log' },
+      { key: 'depth', label: 'Depth', min: 0, max: 100, def: 45, unit: '%' },
+      { key: 'delay', label: 'Delay', min: 4, max: 30, def: 14, unit: 'ms' },
+      { key: 'feedback', label: 'Fdbk', min: 0, max: 70, def: 10, unit: '%' },
+      { key: 'mix', label: 'Mix', min: 0, max: 100, def: 45, unit: '%' },
+    ];
+  }
+  constructor(ctx) {
+    super(ctx, 'chorus');
+    const g = (v = 1) => { const n = ctx.createGain(); n.gain.value = v; return n; };
+    this.wetIn = g(); this.dry = g(); this.wet = g(); this.mono = g(); this.mono.channelCount = 1; this.mono.channelCountMode = 'explicit';
+    this.dL = ctx.createDelay(0.1); this.dR = ctx.createDelay(0.1);
+    this.lfo2 = ctx.createOscillator(); this.lfo2.start();
+    this.modL = g(0); this.modR = g(0); this.fbL = g(0); this.fbR = g(0);
+    this.merger = ctx.createChannelMerger(2);
+    this.wetIn.connect(this.dry).connect(this.output);
+    this.wetIn.connect(this.mono); this.mono.connect(this.dL); this.mono.connect(this.dR);
+    this.lfo.connect(this.modL).connect(this.dL.delayTime); this.lfo2.connect(this.modR).connect(this.dR.delayTime);
+    this.dL.connect(this.fbL).connect(this.dL); this.dR.connect(this.fbR).connect(this.dR);
+    this.dL.connect(this.merger, 0, 0); this.dR.connect(this.merger, 0, 1); this.merger.connect(this.wet).connect(this.output);
+  }
+  applyRate(i) { super.applyRate(i); this.p(this.lfo2.frequency, this.lfoHz() * 1.13, i); }
+  apply(k, v, i) {
+    if (k === 'rate') this.applyRate(i);
+    else if (k === 'delay' || k === 'depth') { const d = (this.values.delay || 14) / 1000, m = d * 0.85 * (this.values.depth || 0) / 100; this.p(this.dL.delayTime, d, i); this.p(this.dR.delayTime, d * 1.07, i); this.p(this.modL.gain, m, i); this.p(this.modR.gain, m, i); }
+    else if (k === 'feedback') { this.p(this.fbL.gain, v / 100, i); this.p(this.fbR.gain, v / 100, i); }
+    else if (k === 'mix') { this.p(this.wet.gain, v / 100, i); this.p(this.dry.gain, 1 - (v / 100) * 0.5, i); }
+  }
+  dispose() { super.dispose(); try { this.lfo2.stop(); } catch (e) {} }
+}
+export class AutoPan extends LfoEffect {
+  static get label() { return 'Auto-Pan'; }
+  static get params() {
+    return [
+      { key: 'sync', label: 'Sync', type: 'select', options: LFO_SYNC, def: '1/4' },
+      { key: 'rate', label: 'Rate', min: 0.05, max: 16, def: 1, unit: 'Hz', curve: 'log', help: 'Speed when Sync is off.' },
+      { key: 'depth', label: 'Depth', min: 0, max: 100, def: 60, unit: '%' },
+      { key: 'shape', label: 'Shape', type: 'select', options: ['sine', 'triangle', 'square'], def: 'sine' },
+    ];
+  }
+  constructor(ctx) {
+    super(ctx, 'autopan');
+    this.wetIn = ctx.createGain(); this.pan = ctx.createStereoPanner(); this.depth = ctx.createGain(); this.depth.gain.value = 0;
+    this.wetIn.connect(this.pan).connect(this.output); this.lfo.connect(this.depth).connect(this.pan.pan);
+  }
+  apply(k, v, i) {
+    if (k === 'sync' || k === 'rate') this.applyRate(i);
+    else if (k === 'depth') this.p(this.depth.gain, v / 100, i);
+    else if (k === 'shape') this.lfo.type = v;
+  }
+}
+export class Tremolo extends LfoEffect {
+  static get label() { return 'Tremolo'; }
+  static get params() {
+    return [
+      { key: 'sync', label: 'Sync', type: 'select', options: LFO_SYNC, def: '1/8' },
+      { key: 'rate', label: 'Rate', min: 0.1, max: 20, def: 5, unit: 'Hz', curve: 'log', help: 'Speed when Sync is off.' },
+      { key: 'depth', label: 'Depth', min: 0, max: 100, def: 50, unit: '%' },
+      { key: 'shape', label: 'Shape', type: 'select', options: ['sine', 'triangle', 'square'], def: 'sine' },
+    ];
+  }
+  constructor(ctx) {
+    super(ctx, 'tremolo');
+    this.wetIn = ctx.createGain(); this.vca = ctx.createGain(); this.depth = ctx.createGain(); this.depth.gain.value = 0;
+    this.smooth = ctx.createBiquadFilter(); this.smooth.type = 'lowpass'; this.smooth.frequency.value = 120; // de-click square LFO
+    this.wetIn.connect(this.vca).connect(this.output); this.lfo.connect(this.smooth).connect(this.depth).connect(this.vca.gain);
+  }
+  apply(k, v, i) {
+    if (k === 'sync' || k === 'rate') this.applyRate(i);
+    else if (k === 'depth') { this.p(this.depth.gain, v / 200, i); this.p(this.vca.gain, 1 - v / 200, i); }
+    else if (k === 'shape') this.lfo.type = v;
+  }
+}
+// Guitar amp: same multi-stage tube-ish engine as the distortion, presented as an amp with channels
+const AMP_CH = { clean: 'clean', crunch: 'crunch', lead: 'highgain', metal: 'death' };
+export class Amp extends Distortion {
+  static get label() { return 'Amp'; }
+  static get params() {
+    return [
+      { key: 'channel', label: 'Channel', type: 'select', options: Object.keys(AMP_CH), def: 'crunch' },
+      { key: 'gain', label: 'Gain', min: 0, max: 100, def: 45, unit: '%' },
+      { key: 'bass', label: 'Bass', min: -12, max: 12, def: 0, unit: 'dB' },
+      { key: 'mid', label: 'Mid', min: -12, max: 12, def: 0, unit: 'dB' },
+      { key: 'treble', label: 'Treble', min: -12, max: 12, def: 0, unit: 'dB' },
+      { key: 'presence', label: 'Pres', min: -12, max: 12, def: 1, unit: 'dB' },
+      { key: 'gate', label: 'Gate', min: -90, max: -20, def: -75, unit: 'dB' },
+      { key: 'cab', label: 'Cab', type: 'select', options: Object.keys(CABS), def: 'combo' },
+      { key: 'master', label: 'Master', min: -30, max: 12, def: 0, unit: 'dB' },
+    ];
+  }
+  constructor(ctx) { super(ctx); this.type = 'amp'; }
+  apply(k, v, i) {
+    if (k === 'channel') { const voice = AMP_CH[v] || 'crunch'; this.values.voicing = voice; this.values.tight = VOICINGS[voice].tight; super.apply('tight', this.values.tight, i); super.apply('voicing', voice, i); }
+    else if (k === 'gain') { this.values.drive = v; super.apply('drive', v, i); }
+    else if (k === 'master') { this.values.level = v + (this.values.channel === 'clean' ? 6 : 0); super.apply('level', v, i); }
+    else super.apply(k, v, i);
+  }
+  toJSON() { const o = super.toJSON(); ['voicing', 'drive', 'level', 'tight'].forEach((k) => delete o.values[k]); return o; }
+}
+
+// ---------------------------------------------------------------- Audio rack: parallel chains + macros
+export const RACK_LIMITS = { chains: 6, fxPerChain: 8, macros: 4, maps: 32 };
+export class Rack extends Effect {
+  static get label() { return 'Rack'; }
+  static get params() {
+    return [0, 1, 2, 3].map((m) => ({ key: 'macro' + (m + 1), label: 'Macro ' + (m + 1), min: 0, max: 100, def: 0, unit: '%', help: 'Macro knob: controls every parameter mapped to it inside the rack.' }));
+  }
+  constructor(ctx) { super(ctx, 'rack'); this.wetIn = ctx.createGain(); this.chains = []; this.rdef = { chains: [], macroMap: [] }; this.bpm = 120; this.key = null; }
+  // called by createEffect with the stored device definition (chains + macro mappings)
+  setDef(def) {
+    this.rdef = def; def.chains = def.chains || []; def.macroMap = def.macroMap || [];
+    this.chains.forEach((c) => this.disposeChain(c)); this.chains = def.chains.map((cd) => this.buildChain(cd));
+    for (let m = 0; m < 4; m++) this.applyMacro(m, true);
+  }
+  buildChain(cd) {
+    const ctx = this.ctx; cd.fx = cd.fx || [];
+    const c = { def: cd, input: ctx.createGain(), fx: [], vol: ctx.createGain(), pan: ctx.createStereoPanner(), mute: ctx.createGain() };
+    c.fx = cd.fx.filter((d) => d.type !== 'rack' && EFFECT_TYPES[d.type]).map((d) => { const f = createEffect(ctx, d.type, d.values, d.enabled !== false); d.values = f.values; return f; });
+    this.wireChain(c);
+    c.vol.connect(c.pan).connect(c.mute).connect(this.output);
+    this.wetIn.connect(c.input);
+    this.syncChain(c, true);
+    return c;
+  }
+  wireChain(c) {
+    try { c.input.disconnect(); } catch (e) {} c.fx.forEach((f) => { try { f.output.disconnect(); } catch (e) {} });
+    let n = c.input; for (const f of c.fx) { n.connect(f.input); n = f.output; } n.connect(c.vol);
+    c.fx.forEach((f) => { if (f.setBpm) f.setBpm(this.bpm); if (f.setGlobalKey && this.key) f.setGlobalKey(this.key); });
+  }
+  syncChain(c, i) { const d = c.def; this.p(c.vol.gain, Math.pow(10, (d.volume || 0) / 20), i); this.p(c.pan.pan, d.pan || 0, i); this.p(c.mute.gain, d.mute ? 0 : 1, i); }
+  rebuildChain(ci) { const old = this.chains[ci]; if (old) this.disposeChain(old); this.chains[ci] = this.buildChain(this.rdef.chains[ci]); }
+  addChain(cd) { this.rdef.chains.push(cd); this.chains.push(this.buildChain(cd)); }
+  removeChain(ci) { const c = this.chains[ci]; if (c) this.disposeChain(c); this.chains.splice(ci, 1); this.rdef.chains.splice(ci, 1); this.rdef.macroMap = this.rdef.macroMap.filter((m) => m.chain !== ci).map((m) => (m.chain > ci ? { ...m, chain: m.chain - 1 } : m)); }
+  disposeChain(c) { try { this.wetIn.disconnect(c.input); } catch (e) {} c.fx.forEach((f) => f.dispose()); [c.input, c.vol, c.pan, c.mute].forEach((n) => { try { n.disconnect(); } catch (e) {} }); }
+  innerParam(chain, fx, key) { const f = this.chains[chain] && this.chains[chain].fx[fx]; return f ? [f, f.def.params.find((p) => p.key === key)] : [null, null]; }
+  applyMacro(m, instant = false) {
+    const v = (this.values['macro' + (m + 1)] || 0) / 100; const changed = [];
+    for (const map of this.rdef.macroMap) {
+      if (map.macro !== m) continue;
+      const [f, p] = this.innerParam(map.chain, map.fx, map.key); if (!f || !p) continue;
+      let val;
+      if (p.type === 'select') val = p.options[Math.min(p.options.length - 1, Math.floor(v * p.options.length))];
+      else if (p.curve === 'log' && map.min > 0 && map.max > 0) val = map.min * Math.pow(map.max / map.min, v);
+      else val = map.min + (map.max - map.min) * v;
+      if (f.values[map.key] !== val) { f.set(map.key, val); changed.push(map); }
+    }
+    if (changed.length && this.onMacro && !instant) this.onMacro(changed);
+  }
+  apply(k) { const m = /^macro(\d)$/.exec(k); if (m && this.rdef) this.applyMacro(+m[1] - 1); }
+  setBpm(bpm) { this.bpm = bpm; this.chains.forEach((c) => c.fx.forEach((f) => f.setBpm && f.setBpm(bpm))); }
+  setGlobalKey(k) { this.key = k; this.chains.forEach((c) => c.fx.forEach((f) => f.setGlobalKey && f.setGlobalKey(k))); }
+  getReduction() { let r = 0; this.chains.forEach((c) => c.fx.forEach((f) => { r = Math.max(r, f.getReduction()); })); return r; }
+  toJSON() { return { ...super.toJSON(), chains: this.rdef.chains, macroMap: this.rdef.macroMap }; }
+  dispose() { this.chains.forEach((c) => this.disposeChain(c)); super.dispose(); }
+}
+
 export const EFFECT_TYPES = {
+  pitch: PitchCorrect,
   eq: ParametricEQ,
   compressor: Compressor,
   distortion: Distortion,
@@ -436,12 +663,49 @@ export const EFFECT_TYPES = {
   reverb: Reverb,
   maximizer: Maximizer,
   limiter: Limiter,
+  amp: Amp,
+  chorus: Chorus,
+  autopan: AutoPan,
+  tremolo: Tremolo,
+  rack: Rack,
 };
 
-export function createEffect(ctx, type, values, enabled = true) {
+export function createEffect(ctx, type, values, enabled = true, def = null) {
   const C = EFFECT_TYPES[type];
   if (!C) throw new Error('Unknown effect ' + type);
-  const fx = new C(ctx).init(values || {});
+  const fx = new C(ctx);
+  fx.init(values || {});
+  if (type === 'rack') fx.setDef(def || { chains: [], macroMap: [] });
   if (!enabled) fx.setEnabled(false);
   return fx;
 }
+
+// Parameters shown in Easy Mode, and short help texts (tooltips / help mode).
+export const EASY_PARAMS = {
+  pitch: ['speed', 'humanize', 'mix'], amp: ['channel', 'gain', 'bass', 'mid', 'treble', 'master'], chorus: ['rate', 'depth', 'mix'], autopan: ['sync', 'depth'], tremolo: ['sync', 'depth'], rack: ['macro1', 'macro2', 'macro3', 'macro4'], eq: ['lowGain', 'm1Gain', 'm2Gain', 'highGain'], compressor: ['threshold', 'ratio', 'makeup'], distortion: ['voicing', 'drive', 'level'],
+  delay: ['sync', 'feedback', 'mix'], reverb: ['space', 'decay', 'mix'], maximizer: ['gain', 'ceiling'], limiter: ['input', 'ceiling'],
+};
+export const EFFECT_HELP = {
+  pitch: 'Pitch Correct: detects the sung/played note and pulls it to the nearest note of the key. Speed 0 = robotic snap. Monophonic sources only.',
+  eq: 'Parametric EQ: shape the tone. Boost or cut bass, mids and treble. The display shows the live spectrum and the EQ curve.',
+  compressor: 'Compressor: evens out loud and quiet parts. Lower threshold = more compression. The display shows gain reduction over time.',
+  distortion: 'Distortion: from light overdrive to extreme high gain, with gate, tone stack and speaker-cabinet simulation.',
+  delay: 'Delay: echoes. Sync locks the echo time to the song tempo.',
+  reverb: 'Reverb: adds space (room, hall, plate…) using impulse responses generated in the app.',
+  maximizer: 'Maximizer: makes the mix louder without clipping.',
+  limiter: 'Limiter: hard ceiling so the output never goes above the set level.',
+  amp: 'Amp: guitar amp simulation with clean/crunch/lead/metal channels, tone stack and speaker cabinet.',
+  chorus: 'Chorus: thickens the sound with slightly detuned, modulated copies (stereo).',
+  autopan: 'Auto-Pan: moves the sound left/right; Sync locks the movement to the tempo.',
+  tremolo: 'Tremolo: rhythmic volume pulsing; Sync locks it to the tempo.',
+  rack: 'Rack: parallel effect chains mixed together, with 4 macro knobs that can control any parameter inside. Save racks as presets.',
+};
+export const PARAM_HELP = {
+  hpf: 'High-pass filter: removes rumble below this frequency.', lpf: 'Low-pass filter: removes hiss above this frequency.',
+  threshold: 'Level where compression starts.', ratio: 'How strongly signals above the threshold are reduced.', attack: 'How fast compression reacts.',
+  release: 'How fast it recovers.', knee: 'Softness of the compression onset.', makeup: 'Gain added after compression.', mix: 'Blend between dry and processed signal.',
+  drive: 'Amount of distortion.', gate: 'Silences noise below this level.', tight: 'Removes low end before distortion for a tighter sound.',
+  voicing: 'Distortion character: overdrive, crunch, high gain, death metal.', cab: 'Speaker cabinet simulation.', level: 'Output level.',
+  ceiling: 'Maximum output level.', gain: 'Input gain / loudness.', feedback: 'Number of repeats.', sync: 'Echo time in note values.',
+  space: 'Type of room.', decay: 'Length of the reverb tail.', predelay: 'Gap before the reverb starts.', tone: 'Brightness.',
+};

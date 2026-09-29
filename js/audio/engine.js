@@ -1,5 +1,8 @@
 // Audio engine: context, master bus, tracks, transport, session/arrangement playback, recording.
 import { createEffect } from './effects.js';
+import { createInstrument } from './instruments.js';
+import { Adaptive } from './adaptive.js';
+import { KeyFollower } from './keyfollow.js';
 
 const dbToLin = (db) => (db <= -60 ? 0 : Math.pow(10, db / 20));
 
@@ -43,6 +46,9 @@ export class Engine {
     this.master.meter.connect(ctx.destination);
     this.metroGain = ctx.createGain(); this.metroGain.gain.value = 0.5; this.metroGain.connect(ctx.destination);
     this._sched = setInterval(() => this.schedulerTick(), 25);
+    this._sense = setInterval(() => this.senseTick(), 50);
+    this.autoRec = { threshold: -40, preroll: 1, state: 'off' };
+    this.keySum = ctx.createGain(); this.keyFollower = new KeyFollower(ctx, this.keySum);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.resume(); });
   }
   // resume() can stay pending (no output device, iOS interruptions) - never block the UI on it
@@ -74,11 +80,12 @@ export class Engine {
     this.setMasterFx(project.master.fx);
     this.syncMaster();
     for (const t of project.tracks) this.addTrack(t);
+    this.routeAll();
   }
   setMasterFx(fxList) {
     const m = this.master;
     m.fx.forEach((f) => f.dispose());
-    m.fx = fxList.map((d) => { const f = createEffect(this.ctx, d.type, d.values, d.enabled !== false); d.values = f.values; return f; });
+    m.fx = fxList.map((d) => { const f = createEffect(this.ctx, d.type, d.values, d.enabled !== false, d); d.values = f.values; return f; });
     this.wireChain(m.input, m.fx, m.out);
   }
   syncMaster() { const v = this.project.master.volume; this.master.out.gain.setTargetAtTime(dbToLin(v), this.ctx.currentTime, 0.01); }
@@ -98,7 +105,13 @@ export class Engine {
     n.meter = this.makeMeter(t.id);
     n.monitor.gain.value = 0;
     n.monitor.connect(n.input);
-    n.post.connect(n.vol).connect(n.pan).connect(n.mute).connect(n.meter).connect(this.master.input);
+    n.adaptive = new Adaptive(ctx);
+    n.input.connect(n.adaptive.input);
+    this.tracks.set(t.id, n);
+    this.setInstrument(t);
+    this.syncAdaptive(t);
+    n.post.connect(n.vol).connect(n.pan).connect(n.mute).connect(n.meter);
+    this.routeTrack(t);
     this.tracks.set(t.id, n);
     this.setTrackFx(t);
     this.syncTrack(t);
@@ -111,13 +124,51 @@ export class Engine {
     this.detachInput(n);
     [n.input, n.post, n.vol, n.pan, n.mute, n.meter, n.monitor].forEach((x) => { try { x.disconnect(); } catch (e) {} });
     n.fx.forEach((f) => f.dispose());
+    if (n.inst) n.inst.dispose();
+    n.adaptive.dispose();
     this.tracks.delete(id); this.meters.delete(id);
+    if (this.project) this.routeAll();
   }
+  // ------------------------------------------------------------------ group buses
+  // A track with groupId feeds that group track's input instead of the master (nesting allowed,
+  // cycles are ignored and fall back to the master).
+  groupOf(t) {
+    const seen = new Set([t.id]); let g = t.groupId && this.project.tracks.find((x) => x.id === t.groupId);
+    for (let x = g; x; x = x.groupId && this.project.tracks.find((y) => y.id === x.groupId)) { if (seen.has(x.id)) return null; seen.add(x.id); if (x.kind !== 'group') return null; }
+    return g && g.kind === 'group' ? g : null;
+  }
+  routeTrack(t) {
+    const n = this.tracks.get(t.id); if (!n) return;
+    const g = this.groupOf(t); const dest = g && this.tracks.get(g.id) ? this.tracks.get(g.id).input : this.master.input;
+    if (n.dest === dest) return;
+    try { n.meter.disconnect(); } catch (e) {}
+    n.meter.connect(dest); n.dest = dest;
+  }
+  routeAll() { for (const t of this.project.tracks) this.routeTrack(t); this.syncMutes(); }
   setTrackFx(t) {
     const n = this.tracks.get(t.id); if (!n) return;
     n.fx.forEach((f) => f.dispose());
-    n.fx = t.fx.map((d) => { const f = createEffect(this.ctx, d.type, d.values, d.enabled !== false); d.values = f.values; return f; });
-    this.wireChain(n.input, n.fx, n.post);
+    n.fx = t.fx.map((d) => { const f = createEffect(this.ctx, d.type, d.values, d.enabled !== false, d); d.values = f.values; return f; });
+    this.wireChain(n.adaptive.output, n.fx, n.post);
+  }
+  // MIDI tracks get an instrument feeding the track input
+  setInstrument(t) {
+    const n = this.tracks.get(t.id); if (!n) return;
+    if (n.inst) { n.inst.dispose(); n.inst = null; }
+    if (t.kind !== 'midi') return;
+    n.inst = createInstrument(this.ctx, t.inst);
+    t.inst = { type: n.inst.type, values: n.inst.values };
+    n.inst.output.connect(n.input);
+  }
+  syncAdaptive(t) {
+    const n = this.tracks.get(t.id); if (!n) return;
+    const a = t.adaptive || { enabled: false, amount: 60 };
+    n.adaptive.amount = a.amount != null ? a.amount : 60;
+    n.adaptive.instrument = t.instrument || 'other';
+    // feed the key follower with every non-drum track (pre-FX)
+    const tonal = t.kind !== 'group' && t.instrument !== 'drums' && !(t.kind === 'midi' && t.inst && t.inst.type === 'drums');
+    if (tonal !== !!n.keyTapped) { try { tonal ? n.input.connect(this.keySum) : n.input.disconnect(this.keySum); } catch (e) {} n.keyTapped = tonal; }
+    if (n.adaptive.enabled !== !!a.enabled) n.adaptive.setEnabled(!!a.enabled);
   }
   fxInstances(trackId) { return trackId === 'master' ? this.master.fx : (this.tracks.get(trackId) || { fx: [] }).fx; }
   setFxParam(trackId, idx, key, value) { const f = this.fxInstances(trackId)[idx]; if (f) f.set(key, value); }
@@ -125,7 +176,7 @@ export class Engine {
   updateBpmFx() {
     if (!this.project) return;
     const all = [...this.master.fx]; this.tracks.forEach((n) => all.push(...n.fx));
-    all.forEach((f) => f.setBpm && f.setBpm(this.project.bpm));
+    all.forEach((f) => { if (f.setBpm) f.setBpm(this.project.bpm); if (f.setGlobalKey) f.setGlobalKey(this.project.key); });
   }
   syncTrack(t) {
     const n = this.tracks.get(t.id); if (!n) return;
@@ -136,10 +187,12 @@ export class Engine {
     n.monitor.gain.setTargetAtTime(t.monitor && t.arm ? 1 : 0, now, 0.01);
   }
   syncMutes() {
-    const anySolo = this.project.tracks.some((t) => t.solo);
-    for (const t of this.project.tracks) {
+    const tr = this.project.tracks, anySolo = tr.some((t) => t.solo);
+    const ancestors = (t) => { const out = []; for (let g = this.groupOf(t); g && out.length < 16; g = this.groupOf(g)) out.push(g); return out; };
+    const soloOK = (t) => t.solo || ancestors(t).some((g) => g.solo) || (t.kind === 'group' && tr.some((x) => x.solo && ancestors(x).includes(t)));
+    for (const t of tr) {
       const n = this.tracks.get(t.id); if (!n) continue;
-      const audible = !t.mute && (!anySolo || t.solo);
+      const audible = !t.mute && (!anySolo || soloOK(t));
       n.mute.gain.setTargetAtTime(audible ? 1 : 0, this.ctx.currentTime, 0.01);
     }
   }
@@ -185,6 +238,60 @@ export class Engine {
   }
   detachInput(n) {
     if (n.inputChain) { try { n.inputChain.gain.disconnect(); n.inputChain.from.disconnect(n.inputChain.gain); } catch (e) {} n.inputChain = null; }
+    n.inputLevel = -100;
+  }
+  // Input sensing (signal indicator), auto-record trigger, adaptive processing steps.
+  senseTick() {
+    if (!this.ctx || !this.project) return;
+    let maxDb = -100;
+    this.tracks.forEach((n) => {
+      const ic = n.inputChain; if (!ic) return;
+      ic.analyser.getFloatTimeDomainData(ic.buf);
+      let pk = 0; for (let i = 0; i < ic.buf.length; i++) { const v = Math.abs(ic.buf[i]); if (v > pk) pk = v; }
+      const db = 20 * Math.log10(pk + 1e-9);
+      n.inputLevel = Math.max(db, (n.inputLevel || -100) - 3); // peak hold with decay
+      if (db > maxDb) maxDb = db;
+    });
+    if (this.autoRec.state === 'waiting') {
+      this.trimWaiting();
+      if (maxDb >= this.autoRec.threshold) this.triggerAutoRecord();
+    }
+    this._adaptTick = ((this._adaptTick || 0) + 1) % 5;
+    if (this._adaptTick === 2 && this.project.keyFollow) {
+      const k = this.keyFollower.step();
+      if (k) { this.project.key = { root: k.root, scale: k.scale }; this.updateBpmFx(); this.emit('key', k); }
+    }
+    if (this._adaptTick === 0) this.tracks.forEach((n) => { if (n.adaptive.enabled && (this.playing || n.inputChain)) n.adaptive.step(); });
+  }
+  // ------------------------------------------------------------------ auto-record (sound-activated with pre-roll)
+  async armAutoRecord(opts = {}) {
+    Object.assign(this.autoRec, opts);
+    const armed = this.project.tracks.filter((t) => t.arm && t.kind !== 'midi');
+    if (!armed.length) throw new Error('Arm at least one audio track to use auto-record.');
+    for (const t of armed) { const n = this.tracks.get(t.id); if (!n.inputChain) await this.attachInput(t); }
+    const now = this.ctx.currentTime;
+    this.recTakes = armed.map((t) => { const n = this.tracks.get(t.id); const rec = this.makeRecorder(n); rec.node.port.postMessage({ type: 'start', time: now }); rec.firstTime = now; return { t, n, rec, auto: true }; });
+    this.autoRec.state = 'waiting';
+    this.emit('transport');
+  }
+  trimWaiting() {
+    const sr = this.ctx.sampleRate, keep = (this.autoRec.preroll + 0.5) * sr;
+    for (const k of this.recTakes || []) {
+      let total = k.rec.chunks.reduce((s, c) => s + c[0].length, 0);
+      while (k.rec.chunks.length > 1 && total - k.rec.chunks[0][0].length > keep) { const n = k.rec.chunks.shift()[0].length; total -= n; k.rec.firstTime += n / sr; }
+    }
+  }
+  triggerAutoRecord() {
+    this.autoRec.state = 'recording';
+    const trig = this.ctx.currentTime;
+    if (!this.playing) this.play();
+    for (const k of this.recTakes) { k.trigTime = trig; }
+    this.recording = true;
+    this.emit('autorecord', { time: trig }); this.emit('transport');
+  }
+  cancelAutoRecord() {
+    for (const k of this.recTakes || []) { k.rec.node.port.postMessage({ type: 'stop', time: this.ctx.currentTime }); try { k.rec.node.disconnect(); } catch (e) {} }
+    this.recTakes = null; this.autoRec.state = 'off'; this.emit('transport');
   }
   // Connect the chosen device/channel to a track (used for arming/monitoring/recording).
   async attachInput(t) {
@@ -205,11 +312,12 @@ export class Engine {
       inp.splitter.connect(gain, ch, 0);
     }
     gain.connect(n.monitor);
-    n.inputChain = { gain, from, stereo, latency: inp.latency, warning, channels: inp.channels };
+    const analyser = this.ctx.createAnalyser(); analyser.fftSize = 1024; gain.connect(analyser);
+    n.inputChain = { gain, from, stereo, latency: inp.latency, warning, channels: inp.channels, analyser, buf: new Float32Array(1024) };
     return n.inputChain;
   }
   releaseUnusedInputs() {
-    const used = new Set(this.project.tracks.filter((t) => t.arm).map((t) => t.inputDeviceId || 'default'));
+    const used = new Set(this.project.tracks.filter((t) => t.arm && t.kind !== 'midi').map((t) => t.inputDeviceId || 'default'));
     for (const [k, inp] of this.inputs) {
       if (!used.has(k)) { inp.stream.getTracks().forEach((x) => x.stop()); try { inp.source.disconnect(); } catch (e) {} this.inputs.delete(k); }
     }
@@ -233,6 +341,7 @@ export class Engine {
     this.startCtxTime = this.ctx.currentTime + 0.06;
     this.playing = true;
     this.nextClick = null;
+    this.midiSchedEnd = this.startCtxTime;
     for (const t of this.project.tracks) this.scheduleArrangement(t);
     this.emit('transport');
   }
@@ -240,14 +349,15 @@ export class Engine {
     if (this.recording) this.stopRecording();
     const pos = this.position();
     this.playing = false;
-    this.tracks.forEach((n) => { this.stopTrackSources(n, 0, true); n.queued = null; });
+    this.tracks.forEach((n) => { this.stopTrackSources(n, 0, true); n.queued = null; if (n.inst) n.inst.allOff(); });
+    if (this.autoRec.state === 'waiting') this.cancelAutoRecord();
     // pressing stop while stopped returns to start (like most DAWs)
     this.startPos = pos === this.startPos ? 0 : pos;
     this.emit('transport'); this.emit('session');
   }
   setPosition(pos) {
     const was = this.playing;
-    if (was) { this.playing = false; this.tracks.forEach((n) => this.stopTrackSources(n, 0, false)); }
+    if (was) { this.playing = false; this.tracks.forEach((n) => { this.stopTrackSources(n, 0, false); if (n.inst && !n.sessionMidi) n.inst.allOff(); }); }
     this.startPos = Math.max(0, pos);
     if (was) this.play();
     this.emit('transport');
@@ -256,18 +366,28 @@ export class Engine {
     n.sources.forEach((s) => { try { s.stop(when); } catch (e) {} });
     n.sources = [];
     if (includeSession && n.sessionSource) { try { n.sessionSource.stop(when); } catch (e) {} n.sessionSource = null; n.sessionSlot = -1; }
+    if (includeSession && n.sessionMidi) { n.sessionMidi = null; n.sessionSlot = -1; }
   }
-  scheduleArrangement(t) {
-    const n = this.tracks.get(t.id); if (!n || n.sessionSource) return;
-    const pos = this.startPos;
+  // Re-schedule one track's arrangement audio from the current playhead (used for live clip edits,
+  // so other tracks keep playing untouched).
+  rescheduleTrack(t) {
+    const n = this.tracks.get(t.id); if (!n || !this.playing || n.sessionSource || n.sessionMidi) return;
+    const now = this.ctx.currentTime + 0.03;
+    n.sources.forEach((s) => { try { s.stop(now); } catch (e) {} }); n.sources = [];
+    this.scheduleArrangement(t, this.startPos + (now - this.startCtxTime));
+  }
+  scheduleArrangement(t, fromPos) {
+    const n = this.tracks.get(t.id); if (!n || n.sessionSource || n.sessionMidi) return;
+    const pos = fromPos != null ? fromPos : this.startPos;
     for (const c of t.arrangement) {
+      if (c.type === 'midi') continue; // MIDI clips are scheduled by the lookahead scheduler
       const buf = this.buffers.get(c.bufferId); if (!buf) continue;
       const end = c.start + c.duration;
       if (end <= pos) continue;
       const src = this.ctx.createBufferSource(); src.buffer = buf;
       const g = this.ctx.createGain(); g.gain.value = dbToLin(c.gain || 0);
       src.connect(g).connect(n.input);
-      const when = this.posToTime(Math.max(pos, c.start));
+      const when = Math.max(this.ctx.currentTime, this.posToTime(Math.max(pos, c.start)));
       const offs = c.offset + Math.max(0, pos - c.start);
       const dur = c.duration - Math.max(0, pos - c.start);
       try { src.start(when, offs, dur); } catch (e) { continue; }
@@ -277,6 +397,7 @@ export class Engine {
   schedulerTick() {
     if (!this.ctx || !this.playing) return;
     this.pollMeters();
+    this.scheduleMidi();
     if (!this.metronome && !this.countIn) return;
     const bd = this.beatDur, ahead = this.ctx.currentTime + 0.12;
     if (this.nextClick == null) {
@@ -301,6 +422,11 @@ export class Engine {
   launchSlot(t, slot) {
     const n = this.tracks.get(t.id); const clip = t.slots[slot];
     if (!n || !clip) return;
+    if (clip.type === 'midi') {
+      if (!this.playing) this.play(this.barFloor(this.startPos));
+      const when = this.ctx.currentTime < this.startCtxTime ? this.startCtxTime : this.nextBarTime();
+      return this.startSessionMidi(t, n, slot, clip, when);
+    }
     const buf = this.buffers.get(clip.bufferId); if (!buf) return;
     if (!this.playing) this.play();
     const when = this.ctx.currentTime < this.startCtxTime ? this.startCtxTime : this.nextBarTime();
@@ -321,8 +447,58 @@ export class Engine {
     setTimeout(() => { if (n.queued && n.queued.when === when) n.queued = null; this.emit('session'); }, Math.max(0, (when - this.ctx.currentTime) * 1000) + 20);
     this.emit('session');
   }
+  startSessionMidi(t, n, slot, clip, when) {
+    n.sources.forEach((s) => { try { s.stop(when); } catch (e) {} }); n.sources = [];
+    if (n.sessionSource) { try { n.sessionSource.stop(when); } catch (e) {} n.sessionSource = null; }
+    if (n.sessionMidi) n.sessionMidi.stopAt = when;
+    const loopLen = Math.max(0.25, clip.lengthBeats || 4) * this.beatDur;
+    const next = { clip, start: when, loopLen, stopAt: Infinity, slot };
+    // keep the old clip running until the switch point, then swap
+    const prev = n.sessionMidi; n.sessionMidiPrev = prev; n.sessionMidi = next;
+    n.sessionSlot = slot; n.queued = { slot, when }; n.sessionStart = when;
+    setTimeout(() => { if (n.queued && n.queued.when === when) n.queued = null; n.sessionMidiPrev = null; this.emit('session'); }, Math.max(0, (when - this.ctx.currentTime) * 1000) + 20);
+    this.emit('session');
+  }
+  // Lookahead MIDI scheduler: session MIDI loops + arrangement MIDI clips -> instrument notes
+  scheduleMidi() {
+    const now = this.ctx.currentTime, from = Math.max(this.midiSchedEnd || now, now), to = now + 0.15;
+    if (to <= from) return;
+    const bd = this.beatDur;
+    for (const t of this.project.tracks) {
+      const n = this.tracks.get(t.id); if (!n || !n.inst) continue;
+      const loops = [n.sessionMidiPrev, n.sessionMidi].filter(Boolean);
+      if (loops.length) {
+        for (const L of loops) {
+          const k0 = Math.floor((from - L.start) / L.loopLen), k1 = Math.floor((to - L.start) / L.loopLen);
+          for (let k = Math.max(0, k0); k <= k1; k++) for (const nt of L.clip.notes) {
+            const tn = L.start + k * L.loopLen + nt.t * bd;
+            if (tn >= from && tn < to && tn < L.stopAt && nt.t * bd < L.loopLen) n.inst.playNote(nt.n, nt.v, tn, Math.min(nt.d * bd, L.stopAt - tn));
+          }
+        }
+        continue;
+      }
+      if (n.sessionSource) continue;
+      const p0 = this.startPos + (from - this.startCtxTime), p1 = this.startPos + (to - this.startCtxTime);
+      for (const c of t.arrangement) {
+        if (c.type !== 'midi' || c.start > p1 || c.start + c.duration < p0) continue;
+        for (const nt of c.notes) {
+          const off = nt.t * bd - (c.offset || 0); if (off < 0 || off >= c.duration) continue;
+          const pn = c.start + off;
+          if (pn >= p0 && pn < p1) n.inst.playNote(nt.n, nt.v, this.posToTime(pn), Math.min(nt.d * bd, c.duration - off));
+        }
+      }
+    }
+    this.midiSchedEnd = to;
+  }
   stopTrackClip(t) {
-    const n = this.tracks.get(t.id); if (!n || !n.sessionSource) return;
+    const n = this.tracks.get(t.id); if (!n) return;
+    if (n.sessionMidi) {
+      const when = this.playing ? this.nextBarTime() : this.ctx.currentTime;
+      n.sessionMidi.stopAt = when; const cur = n.sessionMidi;
+      setTimeout(() => { if (n.sessionMidi === cur) { n.sessionMidi = null; n.sessionSlot = -1; this.emit('session'); } }, Math.max(0, (when - this.ctx.currentTime) * 1000));
+      return;
+    }
+    if (!n.sessionSource) return;
     const when = this.playing ? this.nextBarTime() : 0;
     try { n.sessionSource.stop(when); } catch (e) {}
     n.sessionSource = null; n.sessionSlot = -1;
@@ -398,8 +574,9 @@ export class Engine {
   }
   // Arrangement ("live") recording of all armed tracks from the current playhead.
   async startRecording() {
-    const armed = this.project.tracks.filter((t) => t.arm);
-    if (!armed.length) throw new Error('Arm at least one track (● button) to record.');
+    const armedAll = this.project.tracks.filter((t) => t.arm);
+    if (!armedAll.length) throw new Error('Arm at least one track (● button) to record.');
+    const armed = armedAll.filter((t) => t.kind !== 'midi');
     for (const t of armed) { const n = this.tracks.get(t.id); if (!n.inputChain) await this.attachInput(t); }
     if (!this.playing) this.play();
     const when = Math.max(this.ctx.currentTime, this.startCtxTime);
@@ -410,13 +587,16 @@ export class Engine {
       rec.node.port.postMessage({ type: 'start', time: when });
       return { t, n, rec, startPos };
     });
-    this.recording = true;
+    this.recording = true; this.recStartPos = startPos;
+    this.emit('recstart', { startPos, when });
     this.emit('transport');
   }
   async stopRecording() {
+    if (this.autoRec.state === 'waiting') { this.cancelAutoRecord(); return []; }
     if (!this.recording) return [];
-    this.recording = false;
+    this.recording = false; this.autoRec.state = 'off';
     const when = this.ctx.currentTime;
+    this.emit('recstop', { stopPos: this.startPos + (when - this.startCtxTime) });
     const takes = this.recTakes || []; this.recTakes = null;
     takes.forEach((k) => k.rec.node.port.postMessage({ type: 'stop', time: when }));
     this.emit('transport');
@@ -425,6 +605,16 @@ export class Engine {
       await Promise.race([k.rec.done, new Promise((r) => setTimeout(r, 1500))]);
       const buf = this.finishRecorder(k.rec);
       if (!buf) continue;
+      if (k.auto) {
+        // keep audio from (trigger - preroll); place so its first sample lines up with the transport
+        const keepFrom = Math.max(k.rec.firstTime, k.trigTime - this.autoRec.preroll);
+        let startPos = this.startPos + (keepFrom - this.startCtxTime);
+        let off = keepFrom - k.rec.firstTime;
+        if (startPos < 0) { off -= startPos; startPos = 0; }
+        off += this.inputLatency(k.n);
+        if (off < buf.duration) results.push({ track: k.t, buffer: buf, startPos, offset: off, duration: buf.duration - off, warning: k.n.inputChain && k.n.inputChain.warning, auto: true });
+        continue;
+      }
       const lat = Math.min(this.inputLatency(k.n), buf.duration);
       results.push({ track: k.t, buffer: buf, startPos: k.startPos, offset: lat, duration: buf.duration - lat, warning: k.n.inputChain && k.n.inputChain.warning });
     }

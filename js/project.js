@@ -1,5 +1,6 @@
 // Project model, IndexedDB persistence, WAV encode/decode, and a minimal ZIP (store) reader/writer.
 import { MASTER_PRESET } from './audio/presets.js';
+import { validateProject } from './validate.js';
 
 export const TRACK_COLORS = ['#ff764d', '#ffa529', '#f2d33a', '#9bd44a', '#3ecf8e', '#2fc6d6', '#4a9cff', '#8a7dff', '#d36bff', '#ff5fa2', '#c9a27e', '#9aa4ad'];
 export const NUM_SCENES = 8;
@@ -7,21 +8,25 @@ export const uid = (p = 'id') => p + Math.random().toString(36).slice(2, 9) + Da
 
 export function newProject(name = 'Untitled') {
   return {
-    format: 'webdaw-project', version: 1, id: uid('p'), name, bpm: 120, beatsPerBar: 4, scenes: NUM_SCENES,
+    format: 'webdaw-project', version: 2, id: uid('p'), name, bpm: 120, beatsPerBar: 4, scenes: NUM_SCENES, key: { root: 0, scale: 'major' }, midiMap: [],
     created: Date.now(), modified: Date.now(),
     master: { volume: 0, fx: JSON.parse(JSON.stringify(MASTER_PRESET)).map((f) => ({ ...f, enabled: true })) },
     tracks: [],
   };
 }
-export function newTrack(project, name) {
+export function newTrack(project, name, kind = 'audio', instType = 'synth') {
   const i = project.tracks.length;
-  return {
-    id: uid('t'), name: name || `${i + 1} Audio`, color: TRACK_COLORS[i % TRACK_COLORS.length],
+  const t = {
+    id: uid('t'), kind, name: name || `${i + 1} ${kind === 'midi' ? (instType === 'drums' ? 'Drums' : 'Synth') : 'Audio'}`, color: TRACK_COLORS[i % TRACK_COLORS.length],
+    midiInput: 'all', role: null, roleSource: null, fromBar: 1, adaptive: { enabled: false, amount: 60 },
     volume: 0, pan: 0, mute: false, solo: false, arm: false, monitor: false,
     inputDeviceId: 'default', inputChannel: '0',
     instrument: null, instrumentSource: null, detection: null, preset: null,
     fx: [], slots: new Array(project.scenes || NUM_SCENES).fill(null), arrangement: [],
   };
+  if (kind === 'midi') t.inst = { type: instType, values: {} };
+  t.groupId = null; t.folded = false;
+  return t;
 }
 
 // --------------------------------------------------------------- IndexedDB
@@ -109,8 +114,8 @@ export const DB = {
 export function usedBufferIds(project) {
   const s = new Set();
   for (const t of project.tracks) {
-    t.slots.forEach((c) => c && s.add(c.bufferId));
-    t.arrangement.forEach((c) => s.add(c.bufferId));
+    t.slots.forEach((c) => c && c.bufferId && s.add(c.bufferId));
+    t.arrangement.forEach((c) => c.bufferId && s.add(c.bufferId));
   }
   return s;
 }
@@ -142,7 +147,10 @@ export function decodeWav(bytes, ctx) {
   let o = 12, fmt = null;
   while (o + 8 <= bytes.length) {
     const id = str(o, 4), size = v.getUint32(o + 4, true);
-    if (id === 'fmt ') fmt = { format: v.getUint16(o + 8, true), nc: v.getUint16(o + 10, true), sr: v.getUint32(o + 12, true), bits: v.getUint16(o + 22, true) };
+    if (id === 'fmt ') {
+      fmt = { format: v.getUint16(o + 8, true), nc: v.getUint16(o + 10, true), sr: v.getUint32(o + 12, true), bits: v.getUint16(o + 22, true) };
+      if (fmt.nc < 1 || fmt.nc > 8 || fmt.sr < 8000 || fmt.sr > 192000 || ![8, 16, 24, 32].includes(fmt.bits) || ![1, 3].includes(fmt.format)) throw new Error('Unsupported WAV format in project');
+    }
     else if (id === 'data' && fmt) {
       const bps = fmt.bits / 8, frames = Math.floor(size / (bps * fmt.nc));
       const buf = ctx.createBuffer(fmt.nc, Math.max(1, frames), fmt.sr);
@@ -187,25 +195,42 @@ export function zipFiles(files) { // files: [{name, data:Uint8Array}]
   e.setUint32(12, cdSize, true); e.setUint32(16, offset, true);
   return new Blob([...parts, ...central, new Uint8Array(e.buffer)], { type: 'application/zip' });
 }
-export async function unzip(bytes) {
+export const ZIP_LIMITS = { maxZipBytes: 1024 * 1024 * 1024, maxEntries: 2000, maxEntryBytes: 400 * 1024 * 1024, maxTotalBytes: 1536 * 1024 * 1024, maxJsonBytes: 8 * 1024 * 1024 };
+// Only these entry names are accepted in a project archive (no paths, no traversal, no other types).
+const ENTRY_RE = /^(project\.json|audio\/[A-Za-z0-9_-]{1,48}\.wav)$/;
+export async function unzip(bytes, limits = ZIP_LIMITS) {
+  if (bytes.length > limits.maxZipBytes) throw new Error('Archive too large');
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let eocd = -1;
   for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) if (v.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
   if (eocd < 0) throw new Error('Not a zip file');
   const count = v.getUint16(eocd + 10, true); let p = v.getUint32(eocd + 16, true);
-  const dec = new TextDecoder(); const out = {};
+  if (count > limits.maxEntries) throw new Error('Too many entries in archive');
+  const dec = new TextDecoder(); const out = Object.create(null); let total = 0;
   for (let i = 0; i < count; i++) {
     const method = v.getUint16(p + 10, true), csize = v.getUint32(p + 20, true);
     const nlen = v.getUint16(p + 28, true), elen = v.getUint16(p + 30, true), clen = v.getUint16(p + 32, true), lho = v.getUint32(p + 42, true);
+    if (p + 46 + nlen > bytes.length || v.getUint32(p, true) !== 0x02014b50) throw new Error('Corrupt archive directory');
     const name = dec.decode(bytes.subarray(p + 46, p + 46 + nlen));
+    if (!ENTRY_RE.test(name)) throw new Error(`Rejected archive entry "${name.slice(0, 60)}" (unexpected file or path)`);
+    if (name in out) throw new Error('Duplicate archive entry');
+    const usize = v.getUint32(p + 24, true);
+    if (csize > limits.maxEntryBytes || usize > limits.maxEntryBytes || (name === 'project.json' && usize > limits.maxJsonBytes)) throw new Error('Archive entry too large');
+    if (lho + 30 > bytes.length || v.getUint32(lho, true) !== 0x04034b50) throw new Error('Corrupt archive entry');
     const lnlen = v.getUint16(lho + 26, true), lelen = v.getUint16(lho + 28, true);
     const start = lho + 30 + lnlen + lelen;
+    if (start + csize > bytes.length) throw new Error('Corrupt archive entry size');
     let data = bytes.subarray(start, start + csize);
     if (method === 8) {
       if (typeof DecompressionStream === 'undefined') throw new Error('Compressed zip entries are not supported in this browser');
-      const ds = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-      data = new Uint8Array(await new Response(ds).arrayBuffer());
+      // stream-decompress with a hard cap (zip-bomb protection)
+      const reader = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
+      const parts = []; let got = 0;
+      for (;;) { const { done, value } = await reader.read(); if (done) break; got += value.length; if (got > Math.min(limits.maxEntryBytes, usize || limits.maxEntryBytes)) { reader.cancel(); throw new Error('Archive entry expands beyond its declared/allowed size'); } parts.push(value); }
+      data = new Uint8Array(got); let o2 = 0; for (const q of parts) { data.set(q, o2); o2 += q.length; }
     } else if (method !== 0) throw new Error('Unsupported zip compression method ' + method);
+    else if (csize !== usize) throw new Error('Corrupt stored entry');
+    total += data.length; if (total > limits.maxTotalBytes) throw new Error('Archive expands too large');
     out[name] = data;
     p += 46 + nlen + elen + clen;
   }
@@ -218,21 +243,23 @@ export function exportProjectZip(project, buffers, bits = 16) {
   return zipFiles(files);
 }
 export async function importProjectFile(bytes, ctx) {
-  let project, files = {};
-  if (bytes[0] === 0x7b) { // '{' plain JSON (no audio)
-    project = JSON.parse(new TextDecoder().decode(bytes));
-  } else {
+  let raw, files = Object.create(null);
+  const parse = (u8) => { if (u8.length > ZIP_LIMITS.maxJsonBytes) throw new Error('project.json too large'); try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(u8)); } catch (e) { throw new Error('project.json is not valid JSON'); } };
+  if (bytes[0] === 0x7b) raw = parse(bytes); // '{' plain JSON (no audio)
+  else if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
     files = await unzip(bytes);
     if (!files['project.json']) throw new Error('project.json missing in archive');
-    project = JSON.parse(new TextDecoder().decode(files['project.json']));
-  }
-  if (project.format !== 'webdaw-project') throw new Error('Not a WebDAW project');
+    raw = parse(files['project.json']);
+  } else throw new Error('Unknown file type (expected a .webdaw.zip project)');
+  const { project, bufferIds } = validateProject(raw);
+  // every audio file must be referenced by the project (reject unknown payloads)
+  for (const name of Object.keys(files)) if (name !== 'project.json' && !bufferIds.has(name.slice(6, -4))) throw new Error(`Unreferenced file in archive: ${name}`);
   const buffers = new Map();
-  for (const id of usedBufferIds(project)) {
-    const f = files[`audio/${id}.wav`]; if (!f) continue;
-    let b = decodeWav(f, ctx);
-    if (!b) b = await ctx.decodeAudioData(f.slice().buffer);
-    buffers.set(id, b);
+  for (const bid of bufferIds) {
+    const f = files[`audio/${bid}.wav`]; if (!f) continue;
+    const b = decodeWav(f, ctx);
+    if (!b) throw new Error(`Audio ${bid} is not a valid WAV file`);
+    buffers.set(bid, b);
   }
   return { project, buffers };
 }
