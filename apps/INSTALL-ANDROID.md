@@ -2,7 +2,7 @@
 
 Auduio isn't in the Play Store yet, so you install the app file (an "APK") yourself. It takes about two minutes.
 
-**You need:** Android 7 or newer and the file `Auduio-0.3.1-debug.apk`.
+**You need:** Android 7 or newer and the file `Auduio-0.4.0-android.apk`.
 
 ## 1. Get the file onto your phone
 Pick whichever is easiest:
@@ -11,7 +11,7 @@ Pick whichever is easiest:
 
 ## 2. Open the file
 1. On the phone, open the **Files** app (it may be called "My Files" or "Downloads").
-2. Tap **Auduio-0.3.1-debug.apk**.
+2. Tap **Auduio-0.4.0-android.apk**.
 
 ## 3. Allow the install (first time only)
 Android will say something like *"For your security, your phone is not allowed to install unknown apps from this source."*
