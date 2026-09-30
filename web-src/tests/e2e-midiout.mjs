@@ -15,7 +15,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = spawn('node', [path.join(ROOT, 'tools/serve.mjs'), path.join(ROOT, 'dist'), String(PORT), BASE], { stdio: 'pipe' });
 await new Promise((r) => server.stdout.once('data', r));
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'auduio-e2e-midiout-')); const SINK = path.join(data, 'sink.log');
-const eng = spawn(EXE, [], { env: { ...process.env, AUDUIO_ENGINE_DATA: data, AUDUIO_VST3_PATH: path.join(data, 'none'), AUDUIO_CLAP_PATH: path.join(data, 'none'), AUDUIO_MIDI_TEST_SINK: SINK }, stdio: ['pipe', 'pipe', 'pipe'] });
+const eng = spawn(EXE, [], { env: { ...process.env, AUDUIO_ENGINE_DATA: data, AUDUIO_VST3_PATH: path.join(data, 'none'), AUDUIO_CLAP_PATH: path.join(data, 'none'), AUDUIO_MIDI_TEST_SINK: SINK, AUDUIO_MIDI_TEST_SOURCE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
 let page = null, buf = '', stderr = '';
 eng.stderr.on('data', (d) => (stderr += d));
 eng.stdout.on('data', (d) => { buf += d; let i; const out = []; while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l) out.push(l); }
@@ -43,11 +43,10 @@ try {
   await page.goto(URL_);
   await page.click('#startBtn'); await page.waitForFunction(() => window.__daw && __daw.S.project && !document.querySelector('#startOverlay'), null, { timeout: 20000 });
   await page.waitForFunction(() => __daw.S.pluginApi && __daw.S.pluginApi.connected, null, { timeout: 20000 });
-  const env = await P(async () => { const m = await import('./js/midi.js'); for (let i = 0; i < 50 && !m.engineMidi.ports.length; i++) await new Promise((r) => setTimeout(r, 100)); return { web: m.MIDI.supported, eng: m.engineMidi.available, ports: m.outputs().map((o) => o.name) }; });
+  const env = await P(async () => { const m = await import('./js/midi.js'); for (let i = 0; i < 50 && !m.engineMidi.ports.length; i++) await new Promise((r) => setTimeout(r, 100)); return { web: m.MIDI.webSupported, eng: m.engineMidi.available, ports: m.outputs().map((o) => o.name) }; });
   ok('Webview without Web MIDI: the engine announces midiOut and its ports are listed as MIDI outputs', !env.web && env.eng && env.ports.includes('Auduio Test Sink'), JSON.stringify(env));
 
-  await page.click('.views button[data-view=seq]'); await sleep(150);
-  await page.click('.sq-tadd button'); await sleep(200);
+  await page.click('#seqPanel [data-act=new-synth]'); await sleep(200);
   for (const i of [0, 4, 8, 12]) await page.click(`.sq-step[data-si="${i}"]`);
   await page.selectOption('.sq-out', 'midi'); await sleep(400);
   const opts = await P(() => [...document.querySelectorAll('.sq-port option')].map((o) => ({ v: o.value, t: o.textContent })));
@@ -63,6 +62,21 @@ try {
   const n0 = sink().length; await sleep(600);
   ok('Nothing is sent after stop (queued note-offs flushed/cleared)', sink().length === n0 || sink().slice(n0).every((m) => (m.b[0] & 0xf0) === 0xb0), `${sink().length - n0} extra`);
   await page.selectOption('.sq-out', 'track'); await sleep(100);
+
+  // ---- MIDI in through the engine (no Web MIDI): an armed synth track plays notes from an engine input port
+  const tid = await P(() => __daw.S.selected);
+  await P((id) => { const t = __daw.S.project.tracks.find((x) => x.id === id); if (!t.arm) document.querySelector(`#sessionView .col[data-id="${id}"] .tbtn.arm, #arrangeView .lane-head[data-id="${id}"] .tbtn.arm`)?.click(); }, tid);
+  await page.waitForFunction(async () => { const m = await import('./js/midi.js'); return m.MIDI.inputs().some((i) => i.name === 'Auduio Test Source'); }, null, { timeout: 12000 }).catch(() => {});
+  const ins = await P(async () => { const m = await import('./js/midi.js'); return { sup: m.MIDI.supported, web: m.MIDI.webSupported, ins: m.MIDI.inputs().map((i) => i.id) }; });
+  ok('MIDI in without Web MIDI: the engine\'s input ports are listed as MIDI inputs (ids engine:<name>)', ins.sup && !ins.web && ins.ins.includes('engine:Auduio Test Source'), JSON.stringify(ins));
+  await P((id) => { const n = __daw.engine.tracks.get(id); const d = n.midi || n.inst; window.__inLog = []; const on = d.noteOn.bind(d), off = d.noteOff.bind(d); d.noteOn = (a, b, ...r) => { __inLog.push(['on', a, b]); return on(a, b, ...r); }; d.noteOff = (a, ...r) => { __inLog.push(['off', a]); return off(a, ...r); }; }, tid);
+  const inject = (d) => eng.stdin.write(JSON.stringify({ id: 9000 + Math.floor(Math.random() * 999), cmd: 'midiin.inject', d }) + '\n');
+  inject([0x90, 64, 101]); await sleep(250); inject([0x80, 64, 0]); await sleep(150); inject([0xF8]); inject([0xF0, 1, 2]); await sleep(150);
+  const inLog = await P(() => window.__inLog);
+  ok('A note from the engine MIDI input plays the armed track (note on 64 vel 101, then note off); clock/SysEx are dropped', JSON.stringify(inLog) === '[["on",64,101],["off",64]]', JSON.stringify(inLog));
+  // flood: the engine rate-limits each port (2000 msgs/s) so a stuck controller cannot freeze the app
+  for (let i = 0; i < 3000; i++) inject([0xB0, 1, i & 127]); await sleep(800);
+  ok('Engine stays responsive after a MIDI-in flood (rate limited)', await P(async () => { try { await __daw.S.pluginApi.client.request('ping', {}, 3000); return true; } catch (e) { return false; } }));
 } catch (e) { ok('test run crashed', false, e.stack + '\nENGINE STDERR: ' + stderr.slice(-1500)); }
 finally {
   ok('No uncaught page errors', errors.length === 0, errors.slice(0, 5).join(' | '));

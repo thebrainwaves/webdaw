@@ -1,14 +1,14 @@
-// Protocol test for auduio-engine with a real VST3 (Surge XT). Run:
-//   AUDUIO_ENGINE=engine/build/auduio-engine_artefacts/Release/auduio-engine AUDUIO_TEST_VST3_DIR=/path/with/vst3s node engine/test/engine-test.mjs
-// CLAP: AUDUIO_TEST_FORMAT=CLAP [AUDUIO_TEST_CLAP_DIR=/path/with/claps] (Rust engine only).
+// Protocol test for auduio-engine (engine-rs) with a real plugin (default: the free Surge XT test plugin). Run from apps/:
+//   AUDUIO_ENGINE=engine-rs/target/release/auduio-engine AUDUIO_TEST_VST3_DIR=/path/with/vst3s node engine-rs/test/engine-test.mjs
+// CLAP: AUDUIO_TEST_FORMAT=CLAP [AUDUIO_TEST_CLAP_DIR=/path/with/claps].
 // Optional: DISPLAY set (e.g. Xvfb) -> also opens the plugin editor window.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
 const HERE = path.dirname(new URL(import.meta.url).pathname);
-const EXE = process.env.AUDUIO_ENGINE || path.join(HERE, '..', 'build', 'auduio-engine_artefacts', 'Release', 'auduio-engine');
+const EXE = process.env.AUDUIO_ENGINE || path.join(HERE, '..', 'target', 'release', 'auduio-engine' + (process.platform === 'win32' ? '.exe' : ''));
 const VST3 = process.env.AUDUIO_TEST_VST3_DIR || '/workspace/tools/plugins/lib/vst3';
 const WANT = process.env.AUDUIO_TEST_PLUGIN || 'Surge XT';
-const FORMAT = (process.env.AUDUIO_TEST_FORMAT || 'VST3').toUpperCase(); // VST3 or CLAP (CLAP needs the Rust engine)
+const FORMAT = (process.env.AUDUIO_TEST_FORMAT || 'VST3').toUpperCase(); // VST3 or CLAP
 const CLAP = process.env.AUDUIO_TEST_CLAP_DIR || '/workspace/tools/plugins/lib/clap';
 const results = []; const ok = (n, c, i = '') => { results.push({ name: n, pass: !!c, info: i }); console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${i ? '  — ' + String(i).slice(0, 400) : ''}`); };
 // AUDUIO_TEST_WINE=1: the engine is a Windows build run under wine, so paths handed to it are mapped to Z:\...
@@ -17,15 +17,15 @@ const ep = (p) => (WINE && p.startsWith('/') ? 'Z:' + p.replace(/\//g, '\\') : p
 const hp = (p) => (WINE && /^Z:/i.test(p || '') ? p.slice(2).replace(/\\/g, '/') : p);
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'auduio-engine-'));
 const SINK = path.join(data, 'midi-sink.log');
-const proc = spawn(EXE, [], { env: { ...process.env, AUDUIO_MIDI_TEST_SINK: ep(SINK), AUDUIO_ENGINE_DATA: ep(data), AUDUIO_VST3_PATH: ep(VST3), ...(FORMAT === 'CLAP' ? { AUDUIO_CLAP_PATH: ep(CLAP) } : {}) }, stdio: ['pipe', 'pipe', 'pipe'] });
-let buf = '', nextId = 1; const pending = new Map(), events = [], waiters = [];
+const proc = spawn(EXE, [], { env: { ...process.env, AUDUIO_MIDI_TEST_SINK: ep(SINK), AUDUIO_MIDI_TEST_SOURCE: '1', AUDUIO_ENGINE_DATA: ep(data), AUDUIO_VST3_PATH: ep(VST3), ...(FORMAT === 'CLAP' ? { AUDUIO_CLAP_PATH: ep(CLAP) } : {}) }, stdio: ['pipe', 'pipe', 'pipe'] });
+let buf = '', nextId = 1; const pending = new Map(), events = [], waiters = [], inListeners = new Set();
 proc.stdout.on('data', (d) => {
   buf += d; let i;
   while ((i = buf.indexOf('\n')) >= 0) {
     const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue;
     let m; try { m = JSON.parse(line); } catch (e) { console.log('NON-JSON on stdout:', line.slice(0, 200)); continue; }
     if (m.id != null && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); m.ok ? p.res(m.result) : p.rej(new Error(m.error)); }
-    else if (m.event) { events.push(m); waiters.filter((w) => w.ev === m.event).forEach((w) => { waiters.splice(waiters.indexOf(w), 1); w.res(m); }); }
+    else if (m.event) { inListeners.forEach((f) => f(m)); if (m.event !== 'midiin') events.push(m); waiters.filter((w) => w.ev === m.event).forEach((w) => { waiters.splice(waiters.indexOf(w), 1); w.res(m); }); }
   }
 });
 let stderr = ''; proc.stderr.on('data', (d) => { stderr += d; });
@@ -133,6 +133,18 @@ try {
     const after = fs.readFileSync(SINK, 'utf8').trim().split('\n').slice(3);
     ok('MIDI out: allOff drops queued notes and sends All Notes Off on all 16 channels', !after.some((l) => / 90 40 64$/.test(l)) && after.filter((l) => / 7b 00$/.test(l)).length === 16, after.length + ' lines');
   } else ok('MIDI out test skipped (engine has no midiOut)', true);
+  if (hello.midiIn) {
+    const L3 = await req('midiin.list');
+    ok('MIDI in: lists input ports (test source present)', L3.ports.some((p) => p.name === 'Auduio Test Source'), JSON.stringify(L3).slice(0, 300));
+    await req('midiin.open', { port: 'Auduio Test Source' });
+    const got = []; const off = (m) => { if (m.event === 'midiin') got.push(m); }; inListeners.add(off);
+    const r1 = await req('midiin.inject', { d: [0x91, 64, 90] }), r2 = await req('midiin.inject', { d: [0xF0, 1, 2] }), r3 = await req('midiin.inject', { d: [0xF8] });
+    await new Promise((r) => setTimeout(r, 150)); inListeners.delete(off);
+    ok('MIDI in: note messages arrive as midiin events; SysEx and clock are filtered', got.length === 1 && got[0].port === 'Auduio Test Source' && got[0].d.join() === '145,64,90' && r1.sent && !r2.sent && !r3.sent, JSON.stringify({ got, r2, r3 }));
+    let sent = 0; for (let i = 0; i < 2100; i++) { const r = await req('midiin.inject', { d: [0x90, 60, 1] }); if (r.sent) sent++; }
+    ok('MIDI in: rate limit (at most 2000 messages per second per port)', sent <= 2000 && sent >= 1500, 'sent ' + sent + ' of 2100');
+    await req('midiin.close', {});
+  } else ok('MIDI in test skipped (engine has no midiIn)', true);
   await req('quit');
   code = await new Promise((r) => { const t = setTimeout(() => r(-1), 10000); proc.on('exit', (c) => { clearTimeout(t); r(c); }); });
   ok('Engine quits cleanly on request', code === 0, 'exit ' + code);

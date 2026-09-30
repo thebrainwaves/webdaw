@@ -38,19 +38,28 @@ cut and arrange your recordings, and make it all sound good with one button (Aut
 <li><a href="#4-tracks-and-clips">4. Tracks and clips</a></li>
 <li><a href="#5-cutting-and-editing-clips">5. Cutting and editing clips</a></li>
 <li><a href="#6-instruments">6. Instruments</a></li>
-<li><a href="#7-auto-tune-pitch-correct">7. Auto-tune (Pitch Correct)</a></li>
+<li><a href="#7-pitch-correct">7. Pitch Correct</a></li>
 <li><a href="#8-auto-mix">8. Auto-Mix</a></li>
 <li><a href="#9-effects-and-racks">9. Effects and racks</a></li>
 <li><a href="#10-midi-effects">10. MIDI effects</a></li>
 <li><a href="#11-the-randomizer">11. The randomizer</a></li>
 <li><a href="#12-plugins-desktop-app">12. Plugins (desktop app)</a></li>
-<li><a href="#13-the-step-sequencer-seq">13. The step sequencer (Seq)</a></li>
+<li><a href="#13-the-step-sequencer">13. The step sequencer</a></li>
 <li><a href="#14-phone-mode">14. Phone mode</a></li>
 <li><a href="#15-help-easy-mode-saving-and-safety">15. Help, Easy Mode, saving and safety</a></li>
 <li><a href="#16-keyboard-shortcuts">16. Keyboard shortcuts</a></li>
 </ul>
 </div>
 <h2 class="brk" id="1-getting-started">1. Getting started</h2>
+<p><strong>Which version?</strong> Use Auduio in a web browser, or install the desktop app:</p>
+<ul>
+<li><strong>Windows:</strong> run the <code>.msi</code> or <code>-setup.exe</code> installer.</li>
+<li><strong>macOS:</strong> open the <code>.dmg</code> and drag Auduio to Applications.</li>
+<li><strong>Linux (Debian, Ubuntu and similar):</strong> open the <code>.deb</code> file with your software installer, or run
+  <code>sudo apt install ./Auduio_0.5.1_amd64.deb</code> in a terminal. There is no AppImage.</li>
+<li><strong>Android:</strong> see the install guide that comes with the <code>.apk</code> file.</li>
+</ul>
+<p>Only the desktop app can load plugins (VST3 and CLAP).</p>
 <p><img alt="The start screen" src="img/start.png" /></p>
 <ol>
 <li>Open Auduio. You see a start screen.</li>
@@ -58,7 +67,7 @@ cut and arrange your recordings, and make it all sound good with one button (Aut
 <li>A new song opens with two empty tracks. Your work is <strong>saved automatically</strong> in this browser.</li>
 </ol>
 <p><strong>What is a track?</strong> A track is one lane for one sound: one for your voice, one for a guitar, one for drums.</p>
-<p>The screen has four main parts:</p>
+<p>The screen has five main parts:</p>
 <table>
 <thead>
 <tr>
@@ -71,7 +80,7 @@ cut and arrange your recordings, and make it all sound good with one button (Aut
 <tr>
 <td>Top bar</td>
 <td>top</td>
-<td>Play, Stop, Record, tempo, Undo, the three views, Auto-Mix, Help and the Menu</td>
+<td>Play, Stop, Record, tempo, Undo, the two views, <strong>KEYS</strong>, Auto-Mix, Help and the Menu</td>
 </tr>
 <tr>
 <td>Browser</td>
@@ -81,7 +90,12 @@ cut and arrange your recordings, and make it all sound good with one button (Aut
 <tr>
 <td>Main view</td>
 <td>middle</td>
-<td><strong>Session</strong>, <strong>Arrange</strong> or <strong>Seq</strong> (switch with the buttons or the <strong>Tab</strong> key)</td>
+<td><strong>Session</strong> or <strong>Arrange</strong> (switch with the buttons or the <strong>Tab</strong> key)</td>
+</tr>
+<tr>
+<td>Sequencer panel</td>
+<td>right</td>
+<td>The step sequencer of the selected track, in both views (see section 13)</td>
 </tr>
 <tr>
 <td>Device panel</td>
@@ -100,13 +114,26 @@ cut and arrange your recordings, and make it all sound good with one button (Aut
 <li><strong>Record</strong> (red circle) records every <em>armed</em> track. Shortcut: <strong>R</strong>.
   To arm a track, press its round arm button; it turns red.</li>
 <li><strong>AUTO</strong> waits until you start playing or singing, then starts recording by itself (with a little pre-roll so the first note is not cut off).</li>
-<li><strong>MET</strong> turns the metronome (the click) on and off. Shortcut: <strong>M</strong>.</li>
+<li><strong>MET</strong> turns the metronome (the click) on and off. Shortcut: <strong>Shift+M</strong>.</li>
+<li><strong>KEYS</strong> turns your computer keyboard into a music keyboard (see below). Shortcut: <strong>M</strong>.</li>
 <li><strong>Loop</strong> (two arrows) repeats the part between the loop markers.</li>
 <li><strong>BPM</strong> is the tempo (speed) in beats per minute. Type a number, or press <strong>TAP</strong> on the beat 3 to 8 times. Shortcut: <strong>T</strong>.</li>
 <li><strong>≈ Auto-timing</strong> listens to a band playing, finds the tempo, can follow it live and then lock it.</li>
 <li>The <strong>position</strong> display shows bar . beat . sixteenth.</li>
 </ul>
 <p><img alt="Auto-timing: detect, follow and lock the tempo" src="img/tempo.png" /></p>
+<p><strong>Playing notes with the computer keyboard (KEYS):</strong> press <strong>KEYS</strong> (or <strong>M</strong>). A small keyboard panel appears.</p>
+<ul>
+<li>The keys <strong>A W S E D F T G Y H U J K O L P ;</strong> play notes like piano keys (A = C, W = C#, S = D ...).</li>
+<li><strong>Z</strong> and <strong>X</strong> move one octave down and up. <strong>C</strong> and <strong>V</strong> make notes softer and louder (velocity).</li>
+<li>You can also click the keys of the small piano in the panel.</li>
+<li>The notes go to the armed instrument track, or to the selected one. They are recorded when you record,
+  into a clip or into the step sequencer (<strong>Step</strong> and <strong>Live</strong> recording).</li>
+<li>While you type in a text box nothing is played, and when you switch to another window all notes stop.</li>
+</ul>
+<p><strong>USB MIDI keyboards:</strong> plug one in and arm an instrument track. Browsers with Web MIDI (Chrome, Edge, Firefox) and the
+desktop app on Windows, macOS and Linux (there the audio engine reads the keyboard) both work.</p>
+<p><img alt="The computer keyboard panel" src="img/keys.png" /></p>
 <hr />
 <h2 class="brk" id="3-the-loop-bar-and-take-recording">3. The loop bar and take recording</h2>
 <p>The <strong>loop bar</strong> is the purple bracket above the timeline in the <strong>Arrange</strong> view.</p>
@@ -128,7 +155,7 @@ Long-press or right-click the clip and choose <strong>Take 1</strong>, <strong>T
 </ul>
 <p><img alt="Session view: clips in slots, one column per track, with the mixer below" src="img/session.png" /></p>
 <p><strong>Adding tracks:</strong> use <strong>+ Audio</strong> (microphone or line in), <strong>+ Synth</strong>, <strong>+ Drums</strong> or <strong>+ Group</strong> at the end of the Session view,
-or in the Seq view <strong>+ Synth</strong> / <strong>+ Drums</strong>.</p>
+or at the bottom of the sequencer panel (<strong>+ Synth</strong> / <strong>+ Drums</strong>).</p>
 <p><strong>Working with clips:</strong></p>
 <ul>
 <li><strong>Move:</strong> drag a clip. It snaps to the beat unless you hold <strong>Alt</strong> or <strong>Shift</strong> (or turn <strong>Snap</strong> off).</li>
@@ -185,8 +212,30 @@ and every cut is <strong>one Undo step</strong>.</p>
 </table>
 <p><img alt="The Cut tool: the red line shows where the clip will be cut" src="img/cut-tool.png" /></p>
 <p><img alt="The Edit menu in the Arrange toolbar" src="img/edit-menu.png" /></p>
-<p><strong>Trimming a clip:</strong> to remove the start or end of a clip, cut it and delete the piece you do not want,
-or put the loop over the part to remove and use <strong>Delete loop section</strong>.</p>
+<p><strong>Trimming a clip:</strong> drag the left or right edge of an audio clip in the Arrange view (the mouse pointer becomes a
+double arrow). You can also cut it and delete the piece you do not want, or put the loop over the part to remove and
+use <strong>Delete loop section</strong>.</p>
+<h3 id="fine-editing-micro-editing">Fine editing (micro editing)</h3>
+<p>For exact work, Auduio can edit down to single samples (a sample is the smallest piece of digital sound; there are
+44,100 or 48,000 of them in one second).</p>
+<ul>
+<li><strong>Free placement:</strong> hold <strong>Alt</strong> or <strong>Shift</strong> while you drag a clip, a clip edge, a fade or the loop to place it
+  without snapping to the beat.</li>
+<li><strong>Nudge with the arrow keys:</strong> select a clip and press <strong>Left</strong> / <strong>Right</strong> to move it one beat.
+  <strong>Alt+Left/Right</strong> moves it 1 millisecond, <strong>Alt+Shift+Left/Right</strong> 10 milliseconds.</li>
+<li><strong>Zoom to single samples:</strong> press <strong>+</strong> in the Arrange toolbar (or Ctrl+mouse wheel / pinch) again and again.
+  The toolbar shows the scale (for example "1 sample = 2.0 px") and a fine ruler in milliseconds appears.
+  The clip editor at the bottom (click an audio clip, then <strong>Clip</strong>) zooms down to single samples as well; each sample is a dot.</li>
+<li><strong>Fades:</strong> move the mouse over an audio clip; small handles appear in its top corners. Drag the left one to the right
+  for a <strong>fade in</strong>, the right one to the left for a <strong>fade out</strong>. The fade is shown as a line over the waveform.</li>
+<li><strong>Exact numbers:</strong> in the clip editor you can type the clip's <strong>Position</strong>, <strong>Length</strong> and <strong>Offset</strong> (in seconds,
+  with milliseconds) and the <strong>Fade in</strong> / <strong>Fade out</strong> (in milliseconds). Press <strong>Enter</strong> to apply.</li>
+<li><strong>MIDI notes:</strong> in the piano roll, click a note, then type its <strong>Start</strong>, <strong>Length</strong> (in beats) and <strong>Vel</strong> (velocity),
+  or use the keys: <strong>Left/Right</strong> move it by the grid, <strong>Alt+Left/Right</strong> by 1 tick (1/960 of a beat),
+  <strong>Shift+Left/Right</strong> change the length, <strong>Up/Down</strong> the pitch (<strong>Shift</strong> = octave), <strong>Ctrl/Cmd+Up/Down</strong> the velocity.
+  Hold <strong>Alt</strong> or <strong>Shift</strong> while dragging a note to move it freely. <strong>Ctrl/Cmd+Z</strong> undoes inside the piano roll.</li>
+</ul>
+<p><img alt="Fine editing: sample zoom in the clip editor, with exact numbers" src="img/micro-edit.png" /></p>
 <p><strong>On a phone:</strong> go to <strong>Tracks</strong>, press and hold a clip, and choose <strong>Split here</strong> (cuts at the playhead),
 <strong>Split in half</strong>, <strong>Split at loop edges</strong>, <strong>Move</strong> or <strong>Delete</strong>. See section 13.</p>
 <hr />
@@ -262,7 +311,7 @@ next to them there too. Scroll to other pads to program them.</p>
 <p><img alt="The Drum Kit: the overview strip (left), 16 pads with your samples, and the pad settings" src="img/drumrack-desktop.png" /></p>
 <p><img alt="Drum Kit on a phone: hold a pad for Load sample" src="img/drumrack-phone.png" /></p>
 <hr />
-<h2 class="brk" id="7-auto-tune-pitch-correct">7. Auto-tune (Pitch Correct)</h2>
+<h2 class="brk" id="7-pitch-correct">7. Pitch Correct</h2>
 <p><strong>Pitch Correct</strong> moves sung notes to the nearest correct note of the song's key.</p>
 <ol>
 <li>Select your vocal track.</li>
@@ -317,30 +366,38 @@ settings at once. Try the ready-made racks <strong>Parallel Crush</strong> and <
 <p><img alt="Randomizer options with locks" src="img/randomizer.png" /></p>
 <hr />
 <h2 class="brk" id="12-plugins-desktop-app">12. Plugins (desktop app)</h2>
-<p>The Auduio desktop app for Windows, macOS and Linux can load your <strong>VST3</strong> plugins
-(and <strong>AU</strong> plugins on macOS). CLAP support is planned.</p>
+<p>The Auduio desktop app for Windows, macOS and Linux can load your <strong>VST3</strong> and <strong>CLAP</strong> plugins.
+(Audio Unit plugins on macOS are not supported.)</p>
 <ol>
 <li>In the browser, open <strong>Plugins</strong> and press <strong>Scan</strong>.</li>
 <li>Drag a plugin instrument onto a MIDI track, or a plugin effect after it.</li>
 <li>The plugin card shows its knobs; <strong>Open plugin window</strong> shows the plugin's own screen. Macros, automation and the randomizer work as well.</li>
 </ol>
 <p>Browsers, phones and tablets cannot load plugins; the Plugins section says "Desktop app only" there.</p>
+<p><em>VST is a trademark of Steinberg Media Technologies GmbH, registered in Europe and other countries.</em></p>
 <p><img alt="A hosted plugin in the desktop app" src="img/plugins.png" /></p>
 <hr />
-<h2 class="brk" id="13-the-step-sequencer-seq">13. The step sequencer (Seq)</h2>
+<h2 class="brk" id="13-the-step-sequencer">13. The step sequencer</h2>
 <p>The step sequencer builds patterns by turning steps on and off, like a drum machine.
-It is inspired by hardware sequencers such as the Squarp Pyramid and Hapax.</p>
+It lives in the <strong>sequencer panel</strong> on the right side of the screen, in both the Session and the Arrange view,
+and always shows the <strong>selected track</strong>.</p>
+<ul>
+<li><strong>Resize:</strong> drag the panel's left edge (double-click it for the normal width).</li>
+<li><strong>Fold away:</strong> press the arrow at the top right of the panel; press it again (or the word <strong>Sequencer</strong>) to open it.</li>
+<li>In a narrow window the panel starts folded and opens over the tracks.</li>
+<li>On a phone, press the <strong>step sequencer button</strong> in the top bar; the sequencer slides in from the side (section 14).</li>
+</ul>
 <p><img alt="The step sequencer with a drum pattern" src="img/seq-drums.png" /></p>
 <p><strong>First pattern in 4 steps:</strong></p>
 <ol>
-<li>Click <strong>Seq</strong> at the top (or press <strong>Tab</strong> until you get there).</li>
-<li>Press <strong>+ Synth</strong> or <strong>+ Drums</strong> (or <strong>Add step sequencer</strong> on a selected MIDI track).</li>
+<li>Look at the sequencer panel on the right (open it with its arrow if it is folded).</li>
+<li>Press <strong>New synth sequence</strong> or <strong>New drum sequence</strong> (or select an instrument track and press <strong>Add step sequencer</strong>).</li>
 <li>Tap the squares (steps) to turn notes on. For drums, each row is one drum.</li>
 <li>Press <strong>Play</strong>. The red light runs over the steps.</li>
 </ol>
-<p><strong>The parts of the Seq view, from top to bottom:</strong></p>
+<p><strong>The parts of the sequencer panel, from top to bottom:</strong></p>
 <ul>
-<li><strong>Tracks list</strong> (left): every instrument track, with its pattern, length, speed and a small progress bar.</li>
+<li><strong>Header:</strong> the selected track's name and the fold arrow. Select another track to see its sequencer.</li>
 <li><strong>Toolbar:</strong> <strong>On/Off</strong>, <strong>Steps</strong> (pattern length, 1 to 128), <strong>Rate</strong> (how long each step is: 1/4, 1/8, 1/16, triplets ...),
   <strong>Swing</strong>, <strong>Step</strong> record, <strong>Live</strong> record, <strong>Q</strong> (quantize), <strong>P-Lock</strong>, the dice (<strong>randomize</strong>),
   where the notes go (<strong>This track</strong>, <strong>MIDI out</strong> or both) and the <strong>Loop</strong> button.</li>
@@ -348,10 +405,11 @@ It is inspired by hardware sequencers such as the Squarp Pyramid and Hapax.</p>
   While playing, the new pattern starts when the current one ends (the slot blinks until then).</li>
 <li><strong>Song</strong> chain: press <strong>+ Add</strong> to put the current pattern at the end of the chain, set repeats with <strong>-</strong> and <strong>+</strong>,
   then turn <strong>Song</strong> on. The chain plays in order (for example A x2, B x1) and starts again.</li>
-<li><strong>Step grid:</strong> 16 steps per page; more pages appear for longer patterns. <strong>Follow</strong> keeps the page with the playhead.</li>
+<li><strong>Step grid:</strong> 16 steps per page (8 when the panel is narrow); more pages appear for longer patterns. <strong>Follow</strong> keeps the page with the playhead.</li>
 <li><strong>Lanes</strong> under the grid: pick <strong>Velocity</strong>, <strong>Length</strong>, <strong>Gate</strong>, <strong>Chance</strong>, <strong>Repeat</strong> or <strong>Nudge</strong> and draw over the bars.</li>
 <li><strong>Keys:</strong> a small keyboard (or drum pads) to set notes.</li>
-<li><strong>Step editor</strong> (right): click a step's <strong>number</strong> (or hold the step) to edit it.</li>
+<li><strong>Step editor</strong> (beside the grid when the panel is wide, below it when narrow): click a step's <strong>number</strong> (or hold the step) to edit it.</li>
+<li><strong>+ Synth / + Drums</strong> at the bottom make a new instrument track with a sequencer.</li>
 </ul>
 <p><strong>Step settings (every step has its own):</strong></p>
 <table>
@@ -404,7 +462,7 @@ You can also use <strong>+ Lock a parameter...</strong> in the step editor. Step
 The patterns drift against each other and meet again later: that is called <strong>polymeter</strong> and <strong>polyrhythm</strong>, and it makes grooves more interesting.</p>
 <p><strong>Recording into patterns:</strong></p>
 <ul>
-<li><strong>Step:</strong> press <strong>Step</strong>, then play notes (MIDI keyboard or the on-screen keys). Each note fills the next step.
+<li><strong>Step:</strong> press <strong>Step</strong>, then play notes (MIDI keyboard, computer keyboard with <strong>KEYS</strong>, or the on-screen keys). Each note fills the next step.
   <strong>Rest</strong> skips a step, <strong>Tie</strong> makes the previous note longer. Notes played together on a MIDI keyboard make a chord.</li>
 <li><strong>Live:</strong> press <strong>Live</strong> and <strong>Play</strong>, then play along. Notes land on the nearest step. With <strong>Q</strong> off, your timing is kept as nudge.</li>
 </ul>
@@ -417,8 +475,9 @@ Windows, macOS and Linux (there the audio engine sends the MIDI).</p>
 <p><img alt="Parameter lock mode: the device panel is outlined in red" src="img/seq-plock.png" /></p>
 <hr />
 <h2 class="brk" id="14-phone-mode">14. Phone mode</h2>
-<p>On a phone Auduio shows a simple layout with big buttons and six tabs at the bottom:
-<strong>Record</strong>, <strong>Tracks</strong>, <strong>Steps</strong>, <strong>Mix</strong>, <strong>Effects</strong>, <strong>More</strong>. Swipe left and right to change the track.
+<p>On a phone Auduio shows a simple layout with big buttons and five tabs at the bottom:
+<strong>Record</strong>, <strong>Tracks</strong>, <strong>Mix</strong>, <strong>Effects</strong>, <strong>More</strong>. Swipe left and right to change the track.
+The <strong>step sequencer button</strong> in the top bar slides the step sequencer in from the side; the <strong>X</strong> closes it.
 Buttons give a short vibration (haptics) when you press them; you can turn this off in Settings.</p>
 <table>
 <thead>
@@ -445,7 +504,7 @@ Buttons give a short vibration (haptics) when you press them; you can turn this 
 <ul>
 <li><strong>Record:</strong> one big red button. Tap to record, tap again to stop.</li>
 <li><strong>Tracks:</strong> waveform, clips, arm, mute, solo, add tracks. <strong>Hold a clip</strong> for <strong>Split here</strong>, <strong>Split in half</strong>, <strong>Move</strong> and <strong>Delete</strong>. On a <strong>drum track</strong> the Tracks tab shows the 16 big drum pads with the overview strip; <strong>hold a pad</strong> for <strong>Load sample</strong>.</li>
-<li><strong>Steps:</strong> the step sequencer, 8 steps per row. Hold a step to edit it.</li>
+<li><strong>Step sequencer</strong> (top bar button): 8 steps per row. Hold a step to edit it.</li>
 <li><strong>Mix:</strong> volume of every track and <strong>Auto-Mix</strong>.</li>
 <li><strong>Effects:</strong> add simple effects such as "Space" (room sound) or "Make it louder".</li>
 <li><strong>More:</strong> save, share, tempo, tutorial, settings, help, <strong>User manual</strong>, and <strong>Show full layout</strong>.</li>
@@ -464,8 +523,13 @@ Buttons give a short vibration (haptics) when you press them; you can turn this 
 <strong>Save now</strong>, <strong>Export project (.zip)</strong> to move a song to another computer, <strong>Export encrypted...</strong> (password-protected),
 and <strong>Import project...</strong>.</p>
 <p><img alt="The Menu" src="img/menu.png" /></p>
-<p><strong>Safety and privacy:</strong> Auduio makes no network requests except loading itself; your recordings stay on your device.
-Imported projects are checked strictly before they are opened. You can set a PIN in <strong>Preferences</strong> to protect saved projects.</p>
+<p><strong>Privacy:</strong> Auduio has no accounts, no analytics, no telemetry and no ads. It does not collect, track or send
+any personal data, projects or recordings; everything stays on your device. The web version only downloads the app itself.
+(The Windows installer may download Microsoft's WebView2 runtime if your computer does not have it.)
+The microphone and MIDI devices are used only after you allow them.</p>
+<p><strong>Safety:</strong> imported projects are checked strictly before they are opened. You can set a PIN in <strong>Preferences</strong> to protect saved projects.</p>
+<p><strong>Licences:</strong> Menu &gt; <strong>About</strong> &gt; <strong>Licences...</strong> lists the open-source components Auduio uses and their licences.
+VST is a trademark of Steinberg Media Technologies GmbH, registered in Europe and other countries.</p>
 <hr />
 <h2 class="brk" id="16-keyboard-shortcuts">16. Keyboard shortcuts</h2>
 <table>
@@ -486,7 +550,19 @@ Imported projects are checked strictly before they are opened. You can set a PIN
 </tr>
 <tr>
 <td>M</td>
+<td>Computer keyboard (KEYS) on/off</td>
+</tr>
+<tr>
+<td>Shift+M</td>
 <td>Metronome on/off</td>
+</tr>
+<tr>
+<td>A W S E D F T G Y H U J K O L P ;</td>
+<td>Play notes (when KEYS is on)</td>
+</tr>
+<tr>
+<td>Z / X, C / V</td>
+<td>Octave down / up, softer / louder (when KEYS is on)</td>
 </tr>
 <tr>
 <td>T</td>
@@ -494,7 +570,7 @@ Imported projects are checked strictly before they are opened. You can set a PIN
 </tr>
 <tr>
 <td>Tab</td>
-<td>Switch view (Session, Arrange, Seq)</td>
+<td>Switch view (Session, Arrange)</td>
 </tr>
 <tr>
 <td>Ctrl/Cmd+Z</td>
@@ -537,10 +613,14 @@ Imported projects are checked strictly before they are opened. You can set a PIN
 <td>Place without snapping to the beat</td>
 </tr>
 <tr>
-<td>Shift+click (Seq)</td>
+<td>Left / Right</td>
+<td>Nudge the selected clip one beat (Alt = 1 ms, Alt+Shift = 10 ms)</td>
+</tr>
+<tr>
+<td>Shift+click (sequencer)</td>
 <td>Select a range of steps</td>
 </tr>
 </tbody>
 </table>
 <hr />
-<p><em>Auduio v0.4 user manual. Auduio was formerly called WebDAW.</em></p></body></html>
+<p><em>Auduio v0.5.1 user manual. Auduio was formerly called WebDAW.</em></p></body></html>

@@ -107,6 +107,7 @@ function clip(c, arrangement, bufferIds) {
   if (c.bpm != null) out.bpm = num(c.bpm, 20, 400, 120);
   if (c.transpose != null) out.transpose = num(c.transpose, -24, 24, 0);
   if (arrangement) Object.assign(out, { id: id(c.id, 'clip'), start: num(c.start, 0, 86400, 0), offset: num(c.offset, 0, 86400, 0), duration: num(c.duration, 0.001, 86400, 1) });
+  if (arrangement && (c.fadeIn != null || c.fadeOut != null)) { const fi = num(c.fadeIn, 0, out.duration, 0); out.fadeIn = fi; out.fadeOut = num(c.fadeOut, 0, Math.max(0, out.duration - fi), 0); }
   if (arrangement && Array.isArray(c.takes) && c.takes.length > 1) {
     // loop-recording takes: regions of the same recording
     out.takes = c.takes.slice(0, 256).filter((k) => k && typeof k === 'object').map((k) => ({ start: num(k.start, 0, 86400, 0), offset: num(k.offset, 0, 86400, 0), duration: num(k.duration, 0.001, 86400, 1) }));

@@ -143,40 +143,41 @@ try {
     S.project.tracks[1].arrangement = [{ id: 'cB', bufferId: 'bB', start: 12, offset: 0, duration: 2, name: 'B' }];
     S.project.tracks[0].arrangement = [{ id: 'cA', bufferId: 'bst', start: 0, offset: 0, duration: 8, name: 'A' }];
     S.project.tracks.forEach((t) => engine.rescheduleTrack(t)); S.zoom = 40; S.project.tracks[0].height = 80; S.sel = null; localStorage.setItem('x', '1'); });
+  await page.evaluate(() => { const p = document.querySelector('#seqPanel'); if (p && p.classList.contains('open')) p.querySelector('.sqp-tog').click(); }); await sleep(150);
   await setView(page, 'session'); await setView(page, 'arrange'); await sleep(300);
   const beat = await page.evaluate(() => __daw.engine.beatDur);
   // 1) move B from track 1 to track 0 into the middle of A (snap on): A is split around B
   let b0 = await clipBox(page, 'cB'); let tgt = await lanePoint(page, 0, 3.1);
   const s0 = await page.evaluate(() => __snapState());
-  await dragMouse(page, { x: b0.x + 5, y: b0.y }, { x: tgt.x + 5, y: tgt.y });
+  await dragMouse(page, { x: b0.x + 15, y: b0.y }, { x: tgt.x + 15, y: tgt.y });
   const m1 = await page.evaluate(() => { const [a, b] = __daw.S.project.tracks; return { t0: a.arrangement.map((c) => [c.id === 'cA' ? 'A' : c.id === 'cB' ? 'B' : 'A2', +c.start.toFixed(3), +c.duration.toFixed(3), +(c.offset || 0).toFixed(3)]).sort((x, y) => x[1] - y[1]), t1: b.arrangement.length }; });
   const bStart = m1.t0.find((x) => x[0] === 'B'); const snapped = bStart && Math.abs(bStart[1] / beat - Math.round(bStart[1] / beat)) < 1e-3;
   const split = m1.t0.length === 3 && m1.t0[0][0] === 'A' && Math.abs(m1.t0[0][2] - bStart[1]) < 1e-3 && m1.t0[2][0] === 'A2' && Math.abs(m1.t0[2][1] - (bStart[1] + 2)) < 1e-3 && Math.abs(m1.t0[2][3] - (bStart[1] + 2)) < 1e-3;
-  ok('Drag a clip to another track (snap on → beat grid); the clip underneath is split around it (Ableton-style)', m1.t1 === 0 && snapped && split, JSON.stringify({ beat, m1 }));
+  ok('Drag a clip to another track (snap on → beat grid); the clip underneath is split around it', m1.t1 === 0 && snapped && split, JSON.stringify({ beat, m1 }));
   await page.evaluate(() => __daw.history.undo()); await sleep(200);
   ok('…and the move + trim is one undo step', (await page.evaluate(() => __snapState())) === s0);
   // 2) snap off → exact non-grid position; head-trim of A
   await page.click('#arrangeView .snap-btn'); await sleep(100);
   b0 = await clipBox(page, 'cB'); tgt = await lanePoint(page, 0, 7.13);
-  await dragMouse(page, { x: b0.x + 5, y: b0.y }, { x: tgt.x + 5, y: tgt.y });
+  await dragMouse(page, { x: b0.x + 15, y: b0.y }, { x: tgt.x + 15, y: tgt.y });
   const m2 = await page.evaluate(() => { const t = __daw.S.project.tracks[0]; const b = t.arrangement.find((c) => c.id === 'cB'), a = t.arrangement.find((c) => c.id === 'cA'); return { b: b && +b.start.toFixed(3), a: a && [a.start, +a.duration.toFixed(3)] }; });
   ok('Snap off: clip lands at an exact non-grid position (7.13 s) and the clip underneath is tail-trimmed', m2.b != null && Math.abs(m2.b - 7.13) < 0.03 && Math.abs(m2.b / beat - Math.round(m2.b / beat)) > 0.02 && Math.abs(m2.a[1] - m2.b) < 1e-3, JSON.stringify({ m2, beat }));
   await page.evaluate(() => __daw.history.undo()); await page.click('#arrangeView .snap-btn'); await sleep(200);
   // 3) snap on + Alt held → temporary bypass
   b0 = await clipBox(page, 'cB'); tgt = await lanePoint(page, 1, 5.37);
-  await dragMouse(page, { x: b0.x + 5, y: b0.y }, { x: tgt.x + 5, y: tgt.y }, { mods: ['Alt'] });
+  await dragMouse(page, { x: b0.x + 15, y: b0.y }, { x: tgt.x + 15, y: tgt.y }, { mods: ['Alt'] });
   const m3 = await page.evaluate(() => { const b = __daw.S.project.tracks[1].arrangement.find((c) => c.id === 'cB'); return b && +b.start.toFixed(3); });
   ok('Snap on + Alt held while dropping places freely (no grid)', m3 != null && Math.abs(m3 - 5.37) < 0.03, JSON.stringify({ m3 }));
   await page.evaluate(() => __daw.history.undo()); await sleep(200);
   // 4) full cover removes; drop on the empty lane creates a new track
   await page.evaluate(() => { const { S, engine } = __daw; S.project.tracks[0].arrangement.push({ id: 'cS', bufferId: 'bB', start: 12.5, offset: 0, duration: 1, name: 'small' }); engine.rescheduleTrack(S.project.tracks[0]); S.view = 'session'; document.querySelector('.views button[data-view=arrange]').click(); });
   await sleep(250); b0 = await clipBox(page, 'cB'); tgt = await lanePoint(page, 0, 12);
-  await dragMouse(page, { x: b0.x + 2, y: b0.y }, { x: tgt.x + 2, y: tgt.y });
+  await dragMouse(page, { x: b0.x + 12, y: b0.y }, { x: tgt.x + 12, y: tgt.y });
   const m4 = await page.evaluate(() => __daw.S.project.tracks[0].arrangement.map((c) => c.id));
   ok('A clip fully covered by the dropped clip is removed', m4.includes('cB') && !m4.includes('cS'), JSON.stringify(m4));
   const nTracks = await page.evaluate(() => __daw.S.project.tracks.length);
   b0 = await clipBox(page, 'cB'); const nl = await page.evaluate(() => { const r = document.querySelector('#arrangeView .lane.drop-new').getBoundingClientRect(); return { y: r.top + r.height / 2 }; });
-  await dragMouse(page, { x: b0.x + 2, y: b0.y }, { x: b0.x + 2 + 80, y: nl.y });
+  await dragMouse(page, { x: b0.x + 12, y: b0.y }, { x: b0.x + 12 + 80, y: nl.y });
   const m5 = await page.evaluate(() => { const T = __daw.S.project.tracks; const last = T[T.length - 1]; return { n: T.length, lastClips: last.arrangement.map((c) => c.id), kind: last.kind }; });
   ok('Dropping a clip on empty space below the tracks creates a new track with it', m5.n === nTracks + 1 && m5.lastClips.includes('cB') && m5.kind === 'audio', JSON.stringify(m5));
   await page.evaluate(() => { __daw.history.undo(); __daw.history.undo(); }); await sleep(200);
@@ -184,7 +185,7 @@ try {
   const sBefore = await page.evaluate(() => __snapState());
   b0 = await clipBox(page, 'cB');
   const sessTab = await page.evaluate(() => { const r = document.querySelector('.views button[data-view=session]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
-  await page.mouse.move(b0.x + 5, b0.y); await page.mouse.down(); await page.mouse.move(sessTab.x, sessTab.y, { steps: 10 }); await sleep(700);
+  await page.mouse.move(b0.x + 15, b0.y); await page.mouse.down(); await page.mouse.move(sessTab.x, sessTab.y, { steps: 10 }); await sleep(700);
   const inSession = await page.evaluate(() => __daw.S.view);
   const slotPt = await page.evaluate(() => { const t = __daw.S.project.tracks[0]; const s = document.querySelector(`#sessionView .col[data-id="${t.id}"] .slot[data-slot="2"]`); const r = s.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
   await page.mouse.move(slotPt.x, slotPt.y, { steps: 8 }); await sleep(80);

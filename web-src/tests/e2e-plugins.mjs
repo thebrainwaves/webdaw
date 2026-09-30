@@ -1,4 +1,4 @@
-// v0.4 plugin hosting: the real web UI (headless Chromium) driving the real native engine (auduio-engine, JUCE)
+// v0.4 plugin hosting: the real web UI (headless Chromium) driving the real native engine (auduio-engine, Rust)
 // with a real VST3 (Surge XT, GPL). The page gets a stand-in for the Tauri bridge (window.__TAURI__) that
 // forwards `engine_send` to the engine's stdin and engine stdout lines back as `engine://msg` events, i.e.
 // exactly what apps/src-tauri/src/lib.rs does in the desktop app. Skips (exit 0) when the engine binary or the
@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs'; import path from 'node:path'; import os from 'node:os';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-const EXE = process.env.AUDUIO_ENGINE || '/workspace/daw-apps/engine/build/auduio-engine_artefacts/Release/auduio-engine';
+const EXE = process.env.AUDUIO_ENGINE || '/workspace/daw-apps/engine-rs/target/release/auduio-engine';
 const VST3 = process.env.AUDUIO_TEST_VST3_DIR || '/workspace/tools/plugins/lib/vst3';
 if (!fs.existsSync(EXE) || !fs.existsSync(path.join(VST3, 'Surge XT.vst3'))) { console.log('SKIP: engine or Surge XT not found'); process.exit(0); }
 const PORT = +(process.env.PORT || 8773), BASE = '/daw/';

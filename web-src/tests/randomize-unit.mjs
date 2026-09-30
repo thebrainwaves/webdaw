@@ -123,12 +123,12 @@ function rig(defs, extra = {}) {
 }
 {
   // hosted plugin parameters (normalized, only names known)
-  const names = ['Global Volume', 'A Osc 1 Type', 'A Filter 1 Type', 'A Filter 1 Cutoff', 'A Filter 1 Resonance', 'FX Chain Bypass', 'Active Scene', 'Scene Mode', 'A Amp EG Attack', 'A Osc 1 Pitch', 'Polyphony Limit', 'A VCA Gain', 'Serum Main Vol', 'Env1 Sustain'];
+  const names = ['Global Volume', 'A Osc 1 Type', 'A Filter 1 Type', 'A Filter 1 Cutoff', 'A Filter 1 Resonance', 'FX Chain Bypass', 'Active Scene', 'Scene Mode', 'A Amp EG Attack', 'A Osc 1 Pitch', 'Polyphony Limit', 'A VCA Gain', 'Main Out Vol', 'Env1 Sustain'];
   const defs = names.map((n, i) => ({ key: String(i), label: n, min: 0, max: 1, def: 0.5, plugin: true }));
   const cur = Object.fromEntries(defs.map((p) => [p.key, 0.5]));
   const out = randomizeValues(defs, cur, { amount: 1, mode: 'musical', rng });
   const changedNames = Object.keys(out).map((k) => names[+k]);
-  const kept = ['Global Volume', 'A Osc 1 Type', 'A Filter 1 Type', 'FX Chain Bypass', 'Active Scene', 'Scene Mode', 'Polyphony Limit', 'A VCA Gain', 'Serum Main Vol'];
+  const kept = ['Global Volume', 'A Osc 1 Type', 'A Filter 1 Type', 'FX Chain Bypass', 'Active Scene', 'Scene Mode', 'Polyphony Limit', 'A VCA Gain', 'Main Out Vol'];
   ok('Plugin params, musical: volume, bypass, polyphony and structure selectors (osc/filter type, scene mode) are kept; sound params change', kept.every((n) => !changedNames.includes(n)) && ['A Filter 1 Cutoff', 'A Filter 1 Resonance', 'A Osc 1 Pitch'].every((n) => changedNames.includes(n)), changedNames.join(', '));
   const ch = randomizeValues(defs, cur, { amount: 1, mode: 'chaos', rng, locks: ['0'] });
   ok('Plugin params, chaos: everything but locked changes', !('0' in ch) && Object.keys(ch).length >= names.length - 2, Object.keys(ch).length + ' changed');
@@ -137,8 +137,8 @@ function rig(defs, extra = {}) {
 }
 {
   const { validateProject } = await import('../src/js/validate.js');
-  const base = { format: 'auduio-project', version: 2, id: 'p1', name: 'p', bpm: 120, scenes: 1, tracks: [{ id: 'tm1', name: 'Serum', kind: 'midi', color: '#8B5CF6', slots: [null], arrangement: [], fx: [], inst: { type: 'synth', values: {} },
-    plugins: [{ id: 'plA', uid: 'VST3-Serum 2-abc', name: 'Serum 2', format: 'VST3', instrument: true, state: 'QUJD', values: { 3: 0.25, 99999: 1, x: 0.5, 5: 7 }, locks: ['3', 'zz'], macros: [{ name: 'Bright', value: 0.4, targets: [{ i: 3, min: 0, max: 1 }] }], auto: { 3: [[4, 0.5], [0, 0.1], 'bad'] } },
+  const base = { format: 'auduio-project', version: 2, id: 'p1', name: 'p', bpm: 120, scenes: 1, tracks: [{ id: 'tm1', name: 'Poly Synth', kind: 'midi', color: '#8B5CF6', slots: [null], arrangement: [], fx: [], inst: { type: 'synth', values: {} },
+    plugins: [{ id: 'plA', uid: 'VST3-Wave Synth 2-abc', name: 'Wave Synth 2', format: 'VST3', instrument: true, state: 'QUJD', values: { 3: 0.25, 99999: 1, x: 0.5, 5: 7 }, locks: ['3', 'zz'], macros: [{ name: 'Bright', value: 0.4, targets: [{ i: 3, min: 0, max: 1 }] }], auto: { 3: [[4, 0.5], [0, 0.1], 'bad'] } },
       { id: 'b"ad<id>', uid: 'VST3-Fx', name: 'FX', state: 'not base64!!', values: {} }] }],
     midiMap: [{ ch: 0, cc: 20, trackId: 'tm1', fx: 'plugin:plA', key: '3' }, { ch: 0, cc: 21, trackId: 'tm1', fx: 'plugin:plA', key: 'nope' }] };
   let v = null, err = null; try { v = validateProject(JSON.parse(JSON.stringify(base))).project; } catch (e) { err = e.message; }

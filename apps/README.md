@@ -16,16 +16,17 @@ On Debian/Ubuntu: `libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev l
 ```sh
 npm install
 node scripts/sync-web.mjs ../daw
-cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release && cmake --build engine/build --config Release
+cargo build --release --manifest-path engine-rs/Cargo.toml
 node scripts/place-engine.mjs                # native plugin engine -> src-tauri/binaries/ (required by externalBin)
 npx tauri build                              # installers go to src-tauri/target/release/bundle/
-npx tauri build --bundles deb,appimage       # Linux only
+npx tauri build --bundles deb                # Linux: .deb only (no AppImage)
 scripts/smoke-linux.sh                       # headless launch test (Xvfb): screenshots + page console
 ```
 
-VST3 / AU plugins: the desktop app ships a native audio engine sidecar (`engine/`, JUCE C++) that hosts plugins
-in a separate process. Protocol, routing, security and build notes: [docs/PLUGIN-HOSTING.md](docs/PLUGIN-HOSTING.md).
-The engine also needs `libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxcomposite-dev` on Linux.
+VST3 / CLAP plugins: the desktop app ships a native audio engine sidecar (`engine-rs/`, Rust) that hosts plugins
+in a separate process, on Windows, macOS and Linux (no Audio Units). Protocol, routing, security and build notes:
+[docs/PLUGIN-HOSTING.md](docs/PLUGIN-HOSTING.md) and [engine-rs/README.md](engine-rs/README.md). On Linux the engine
+needs `libasound2-dev`. Licence gates: `cargo deny check licenses` in `engine-rs/` and `src-tauri/`. Third-party notices: `node scripts/gen-notices.mjs` (CI runs it on every build).
 
 Microphone access by platform:
 - **macOS:** `NSMicrophoneUsageDescription` in `src-tauri/Info.plist`, plus the audio-input entitlement in `entitlements.plist`.
@@ -59,7 +60,7 @@ The `ios/` project has:
 To build on a Mac with Xcode 16 or newer: `npx cap sync ios && npx cap open ios`. Then set your Team under Signing & Capabilities and run on a device.
 
 ## CI
-- `.github/workflows/desktop.yml` builds a macOS universal .dmg, a Windows .msi and NSIS .exe, and a Linux .deb and .AppImage.
+- `.github/workflows/desktop.yml` builds a macOS universal .dmg, a Windows .msi and NSIS .exe, and a Linux .deb (no AppImage).
 - `.github/workflows/android.yml` builds a debug APK.
 - On a `v*` tag, both attach their files to a draft GitHub Release.
 - Signing secrets are commented-out placeholders.

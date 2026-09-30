@@ -77,7 +77,7 @@ export const DRUM_NOTES = { 36: 'kick', 37: 'rim', 38: 'snare', 39: 'clap', 42: 
 export const PAD_ORDER = [[36, 'Kick'], [38, 'Snare'], [39, 'Clap'], [37, 'Rim'], [42, 'Hat'], [46, 'Open'], [41, 'Tom L'], [45, 'Tom M'], [48, 'Tom H'], [49, 'Crash'], [51, 'Ride']];
 const FALLBACK = ['kick', 'rim', 'snare', 'clap', 'hatC', 'tomL', 'hatC', 'tomM', 'hatO', 'tomH', 'crash', 'ride'];
 export const KITS = {
-  electro: { label: '808 / Electro', kick: { f0: 160, f1: 42, pd: 18, dec: 0.9, click: 0.1 }, snare: { tone: 190, noise: 0.7, dec: 0.18 }, hat: { dec: 0.05, open: 0.45, bright: 1 }, tom: { dec: 0.5, base: 90 }, cym: { dec: 1.6 }, drive: 0 },
+  electro: { label: 'Electro', kick: { f0: 160, f1: 42, pd: 18, dec: 0.9, click: 0.1 }, snare: { tone: 190, noise: 0.7, dec: 0.18 }, hat: { dec: 0.05, open: 0.45, bright: 1 }, tom: { dec: 0.5, base: 90 }, cym: { dec: 1.6 }, drive: 0 },
   acoustic: { label: 'Acoustic-ish', kick: { f0: 140, f1: 55, pd: 35, dec: 0.35, click: 0.35 }, snare: { tone: 220, noise: 0.85, dec: 0.22 }, hat: { dec: 0.06, open: 0.55, bright: 0.8 }, tom: { dec: 0.45, base: 100 }, cym: { dec: 2.2 }, drive: 0 },
   metal: { label: 'Metal (tight)', kick: { f0: 190, f1: 58, pd: 55, dec: 0.22, click: 0.9 }, snare: { tone: 240, noise: 0.95, dec: 0.2 }, hat: { dec: 0.04, open: 0.4, bright: 1.2 }, tom: { dec: 0.4, base: 110 }, cym: { dec: 1.8 }, drive: 0.4 },
 };

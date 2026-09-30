@@ -1,11 +1,14 @@
-# Plugin hosting in the Auduio desktop app (VST3, AU)
+# Plugin hosting in the Auduio desktop app (VST3, CLAP)
 
-Auduio's audio engine is Web Audio, and a browser can't load VST/AU plugins. So the desktop app (Tauri)
+> **Current state (v0.5.1):** every desktop release ships the Rust engine in `../engine-rs`: VST3 and CLAP on
+> Windows, macOS and Linux. Audio Units are not supported. The earlier C++ engine has been removed from the repository.
+
+Auduio's audio engine is Web Audio, and a browser can't load native plugins. So the desktop app (Tauri)
 ships a second process next to the window: **auduio-engine**, a small native audio engine written in
-C++ with [JUCE](https://juce.com). The window talks to it over a pipe.
+Rust (`../engine-rs`). The window talks to it over a pipe.
 
 ```
- Auduio window (Tauri webview)                     auduio-engine (JUCE, separate process)
+ Auduio window (Tauri webview)                     auduio-engine (Rust, separate process)  
  ┌───────────────────────────┐   invoke engine_send  ┌──────────────────────────────────────┐
  │ web app (Web Audio tracks) │ ───────────────────▶ │ stdin: NDJSON commands               │
  │ plugins/host.js  (client)  │                      │ tracks -> plugin chain -> device out │
@@ -53,7 +56,7 @@ Events look like `{"event": "<name>", ...}`. Logs go to stderr.
 
 | Command | Arguments | Result |
 |---|---|---|
-| `hello` / `ping` | | engine version, protocol, JUCE version, formats, device, dataDir |
+| `hello` / `ping` | | engine version, protocol, host, formats, device, dataDir |
 | `clock` | | `{samples, sampleRate, seconds, running}` |
 | `audio.devices` | | device types, current device |
 | `audio.open` | `type?, device?, sampleRate?, bufferSize?` | device info (incl. `outputLatency`) |
@@ -73,6 +76,8 @@ Events look like `{"event": "<name>", ...}`. Logs go to stderr.
 | `track.set` | `trackId, gainDb?, pan?, mute?` | |
 | `track.remove` | `trackId` | unloads that track's plugins |
 | `render` | `trackId, seconds, notes:[{t,n,v,d}], wav?` | offline render: `{peak, rms, samples, sampleRate, wav?}` |
+| `midiout.list` / `midiout.send` / `midiout.allOff` / `midiout.close` | | hardware MIDI out (see engine-rs/README.md) |
+| `midiin.list` / `midiin.open` / `midiin.close` | `port` | hardware MIDI in; events `{"event":"midiin", port, d:[...]}` |
 | `quit` | | clean exit. EOF on stdin also quits |
 
 Events:
@@ -136,14 +141,14 @@ Tauri side (`src-tauri/src/lib.rs`, `sidecar.rs`):
   - parameter indices are bounded
   - there are at most 8 plugins per track, 8 macros and 20k automation points
 - MIDI accepts channel messages only. SysEx is rejected.
-- JUCE is built without web-browser and curl support.
+- The engine has no networking code at all.
 - Plugins are still native code running with the user's rights, like in every DAW. Only load
   plugins you trust.
 
 ## Graceful fallback
 
 `plugins/host.js → pluginSupport()` returns `desktop: true` only inside the Tauri app.
-- **Browser (web app):** the Plugins section reads "Desktop app only. Plugins (VST3, AU) need the
+- **Browser (web app):** the Plugins section reads "Desktop app only. Plugins (VST3, CLAP) need the
   Auduio desktop app for Windows, macOS or Linux".
 - **Android/iOS (Capacitor):** the same, with a phone-specific message.
 - **Phone layout:** the sidebar is hidden.
@@ -153,33 +158,30 @@ Tauri side (`src-tauri/src/lib.rs`, `sidecar.rs`):
 ## Building
 
 ```bash
-# engine (any OS; JUCE 8.0.12 is fetched automatically, or pass -DJUCE_DIR=/path/to/JUCE)
-cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
-cmake --build engine/build --config Release
+# engine (any OS; Rust stable)
+cargo build --release --manifest-path engine-rs/Cargo.toml
 node scripts/place-engine.mjs          # -> src-tauri/binaries/auduio-engine-<triple>[.exe]
 npm run tauri build                    # bundles it via tauri.conf.json bundle.externalBin
 
 # tests
-DISPLAY=:0 node engine/test/engine-test.mjs          # protocol + a real VST3 (AUDUIO_TEST_VST3_DIR, default Surge XT)
-AUDUIO_ENGINE=engine/build/.../auduio-engine cargo test --manifest-path src-tauri/Cargo.toml --lib sidecar
+DISPLAY=:0 node engine-rs/test/engine-test.mjs       # protocol + a real VST3 (AUDUIO_TEST_VST3_DIR); AUDUIO_TEST_FORMAT=CLAP for CLAP
+AUDUIO_ENGINE=engine-rs/target/release/auduio-engine cargo test --manifest-path src-tauri/Cargo.toml --lib sidecar
 node ../web-src/tests/e2e-plugins.mjs                  # web UI (Chromium) driving the real engine + Surge XT
 ```
 
-- **Linux build dependencies:** `libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev
-  libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxcomposite-dev`.
-- **Windows:** Visual Studio 2022 (MSVC) and CMake ≥ 3.22. The CRT is linked statically, so there's
-  no redistributable to install.
-- **macOS:** Xcode. The workflow builds a universal (arm64 + x86_64) engine.
+- **Linux build dependencies:** `libasound2-dev`.
+- **Windows:** Rust with the MSVC toolchain (Visual Studio 2022 Build Tools).
+- **macOS:** Xcode command-line tools. The workflow builds both architectures and joins them with `lipo`.
 - **CI:** `.github/workflows/desktop.yml` builds the engine on windows-latest, macos-latest and
   ubuntu-22.04 before `tauri-action`, then runs a protocol self-test.
 
 ## Windows notes (the first target)
 
 - Scanned folders:
-  - `C:\Program Files\Common Files\VST3` (JUCE default)
+  - `C:\Program Files\Common Files\VST3` (the standard folder)
   - `%LOCALAPPDATA%\Programs\Common\VST3` (per-user)
   - plus `AUDUIO_VST3_PATH` (`;`-separated)
-- Serum 2 installs its VST3 into the common folder. After Scan it appears under Plugins → Inst.
+- Most commercial synths install their VST3 into the common folder. After Scan they appear under Plugins → Inst.
 - The audio device is WASAPI (shared) by default. ASIO needs the Steinberg ASIO SDK licence and is
   not enabled.
 - The engine is spawned with `CREATE_NO_WINDOW` (no console flashes).
@@ -187,8 +189,7 @@ node ../web-src/tests/e2e-plugins.mjs                  # web UI (Chromium) drivi
 
 ## Not done yet / known gaps
 
-- **CLAP:** JUCE 8 has no CLAP *host*. Adding it would mean the CLAP SDK directly (clap-helpers) as
-  a second format in the scanner and loader.
+- **Audio Units (macOS):** not supported, by design. VST3 and CLAP only.
 - **Plugin effects on audio tracks** (audio to the engine) and **freeze/bounce in the UI:** the
   engine has `render`, but there's no UI yet.
 - **Sidechain inputs, multi-output instruments, plugin latency compensation against Web Audio
@@ -196,14 +197,15 @@ node ../web-src/tests/e2e-plugins.mjs                  # web UI (Chromium) drivi
 - **Surge XT state restore:** after `state.set`, the sound comes back immediately, but Surge
   publishes the restored values to the host's parameter list lazily, so the card can show old
   numbers until the next change.
-- **Only verified on Linux (x86_64):** engine build, protocol tests, a real VST3 (Surge XT), the
-  editor window, and the full Tauri app with WebKitGTK. Windows and macOS builds are configured but
-  have not run yet.
+- **Verified on Linux (x86_64)** with real VST3 and CLAP plugins, the editor window and the full Tauri app;
+  the Windows engine passes the same tests under wine. macOS is compile-checked only. Nothing has run on
+  real Windows or Mac hardware yet.
 
 ## Licence
 
-JUCE is dual-licensed: **GPLv3** or a commercial JUCE licence. Distributing the engine built against
-JUCE under the GPL means distributing its source under the GPLv3 too (the engine lives in `engine/`).
-To keep the app MIT-only, either get a JUCE licence or keep the engine a separately distributed GPL
-component. The two talk over a pipe, so they're separate programs. The VST3 SDK that JUCE bundles is
-MIT-licensed since 3.7.7.
+Releases ship only the Rust engine (`engine-rs`), whose dependencies are all permissive (MIT / Apache-2.0 /
+BSD / ISC / Zlib / Unicode / MPL-2.0 unmodified; cargo-deny gates for `engine-rs` and `src-tauri` in CI). No JUCE
+code is used or shipped. The VST 3 SDK is MIT-licensed since version 3.8.0 (the Rust `vst3` crate's bindings are generated
+from the 3.8.0 headers). CLAP is MIT. Use of the "VST" name follows Steinberg's rules: the notice "VST is a
+trademark of Steinberg Media Technologies GmbH, registered in Europe and other countries" appears in About and the
+release notes, and no VST logo is used.

@@ -23,6 +23,7 @@ import { openPianoRoll } from './ui/pianoroll.js';
 import { History } from './history.js';
 import { validateProject, validateRack } from './validate.js';
 import { MIDI, createMidiOut, engineMidi } from './midi.js';
+import { createCompKeys } from './ui/compkeys.js';
 import { createSeqView } from './ui/seqview.js';
 import { createDrumRack } from './ui/drumrack.js';
 import { lockKey } from './audio/sequencer.js';
@@ -119,6 +120,19 @@ function drawArrClip(el) {
   const rate = Math.pow(2, (c.transpose || 0) / 12);
   const a = (c.offset || 0) + (visL / S.zoom) * rate, b = (c.offset || 0) + (visR / S.zoom) * rate;
   drawWaveform(cv, engine.buffers.get(c.bufferId), { startSec: a, endSec: b, color: t.color, gain: dbToGain(c.gain) });
+  drawFades(cv, c, visL, visR);
+  const fi = el.querySelector('.fh.fi'), fo = el.querySelector('.fh.fo');
+  if (fi) fi.style.left = Math.min(clipW - 8, (c.fadeIn || 0) * S.zoom) + 'px';
+  if (fo) fo.style.right = Math.min(clipW - 8, (c.fadeOut || 0) * S.zoom) + 'px';
+}
+// fade in / out shapes over the waveform (clip-relative px range visL..visR is what the canvas shows)
+function drawFades(cv, c, visL, visR) {
+  const fi = (c.fadeIn || 0) * S.zoom, fo = (c.fadeOut || 0) * S.zoom, W = c.duration * S.zoom; if (!fi && !fo) return;
+  const g = cv.getContext('2d'), sx = cv.width / Math.max(1, visR - visL), H = cv.height, X = (x) => (x - visL) * sx;
+  g.save(); g.fillStyle = 'rgba(0,0,0,.45)'; g.strokeStyle = 'rgba(255,255,255,.7)'; g.lineWidth = Math.max(1, devicePixelRatio || 1);
+  if (fi > 0) { g.beginPath(); g.moveTo(X(0), 0); g.lineTo(X(fi), 0); g.lineTo(X(0), H); g.closePath(); g.fill(); g.beginPath(); g.moveTo(X(0), H); g.lineTo(X(fi), 0); g.stroke(); }
+  if (fo > 0) { g.beginPath(); g.moveTo(X(W), 0); g.lineTo(X(W - fo), 0); g.lineTo(X(W), H); g.closePath(); g.fill(); g.beginPath(); g.moveTo(X(W - fo), 0); g.lineTo(X(W), H); g.stroke(); }
+  g.restore();
 }
 let clipRedrawPending = false;
 function scheduleClipRedraw() { if (clipRedrawPending) return; clipRedrawPending = true; requestAnimationFrame(() => { clipRedrawPending = false; $$('#arrangeView .aclip').forEach((el) => { if (el._clip && el._clip.type !== 'midi') drawArrClip(el); }); }); }
@@ -158,6 +172,26 @@ function touchDragOnHold(el, getSrc) {
   el.addEventListener('touchend', () => { armedAt = null; });
 }
 const consumedLongPress = (el) => { if (el._longPressed) { el._longPressed = false; return true; } return false; };
+// ---- About, privacy, licences
+const APP_VERSION = '0.5.1';
+const PRIVACY_NOTE = 'Auduio has no accounts, no analytics, no telemetry and no ads. It does not collect, track or send any personal data, projects or recordings. Projects and settings stay on your device (browser storage, or files you export yourself). Network use: the web version downloads the app itself; the desktop installer for Windows may download Microsoft\'s WebView2 runtime if it is missing. Microphone and MIDI devices are only used after you allow them, and only on your device.';
+function aboutDialog() {
+  openDialog('About Auduio', h('div', { class: 'about' },
+    h('p', {}, `Auduio v${APP_VERSION}: a music workstation for recording, arranging and sequencing, in the browser, on the desktop and on phones. Works offline once loaded. © 2026 thebrainwaves. All rights reserved.`),
+    h('p', { class: 'hint' }, 'Plugins (desktop app only): VST3 and CLAP on Windows, macOS and Linux. Audio Unit plugins are not supported.'),
+    h('h4', {}, 'Privacy'), h('p', { class: 'privacy' }, PRIVACY_NOTE),
+    h('h4', {}, 'Licences and trademarks'),
+    h('p', { class: 'hint' }, 'Auduio uses open-source components; their notices are listed under Licences. VST is a trademark of Steinberg Media Technologies GmbH, registered in Europe and other countries. All other product names belong to their owners; Auduio is not affiliated with them.'),
+    h('p', {}, h('button', { type: 'button', class: 'small lic-btn', onclick: () => licencesDialog() }, 'Licences…')),
+    h('p', { class: 'hint' }, 'Shortcuts: Space play/stop · R record · M computer keyboard · Shift+M metronome · Tab switch view · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z or Ctrl+Y redo · Ctrl/Cmd+C/V/D copy/paste/duplicate · Delete remove clip · Ctrl/Cmd+E or S split at playhead · X cut tool · B browser · Arrow keys nudge the selected clip (Alt = 1 ms).')));
+}
+async function licencesDialog() {
+  const pre = h('pre', { class: 'lic-text', tabindex: 0, 'aria-label': 'Third-party notices' }, 'Loading…');
+  openDialog('Licences', h('div', { class: 'lic' },
+    h('p', { class: 'hint' }, 'Third-party software used by Auduio (all builds), with their licences. Plugin APIs: VST 3 (MIT, Steinberg Media Technologies GmbH) and CLAP (MIT, Alexandre Bique). VST is a trademark of Steinberg Media Technologies GmbH.'), pre));
+  try { const r = await fetch('THIRD-PARTY-NOTICES.txt'); pre.textContent = r.ok ? await r.text() : 'The notices file could not be loaded (' + r.status + ').'; }
+  catch (e) { pre.textContent = 'The notices file could not be loaded: ' + e.message; }
+}
 function openDialog(title, content, buttons = [{ label: 'Close' }], cls = '') {
   const dlg = $('#dlg'); dlg.innerHTML = ''; dlg.className = cls;
   const form = h('form', { method: 'dialog' }, h('h3', {}, title), content,
@@ -877,6 +911,7 @@ function selectTrack(id) {
   $$('#sessionView .col-head').forEach((e) => e.classList.toggle('sel', e.closest('.col').dataset.id === id));
   $$('#arrangeView .lane-head').forEach((e) => e.classList.toggle('sel', e.dataset.id === id));
   renderDevices();
+  if (seqView) seqView.render(); // the sequencer side panel follows the selected track
 }
 function sessionColumn(t) {
   const col = h('div', { class: 'col' + (t.kind === 'midi' ? ' midi' : ''), 'data-id': t.id, style: { '--c': t.color } });
@@ -932,8 +967,12 @@ function newMidiClipInSlot(t, i) {
   change('New MIDI clip', () => { t.slots[i] = clip; });
   renderSession(); editMidiClip(t, clip);
 }
-function editMidiClip(t, clip) {
-  openPianoRoll({ clip, title: `${t.name} · ${clip.name || 'MIDI'}`, color: t.color, history,
+function editMidiClip(t, clip, keepView) {
+  // Undo/redo inside the piano roll: the snapshot restore replaces the clip object, so find it again and reopen
+  const loc = clip.id ? { id: clip.id } : { slot: t.slots.indexOf(clip) };
+  const relocate = () => { const t2 = track(t.id); if (!t2) return null; const c2 = loc.id ? t2.arrangement.find((x) => x.id === loc.id) : t2.slots[loc.slot]; return c2 && c2.type === 'midi' ? { t: t2, c: c2 } : null; };
+  const pr = openPianoRoll({ clip, title: `${t.name} · ${clip.name || 'MIDI'}`, color: t.color, history, view: keepView,
+    onUndo: (isRedo) => { const v = { ...pr.view }; pr.close(); isRedo ? redo() : undo(); const r = relocate(); if (r) editMidiClip(r.t, r.c, v); },
     onChange: (what) => { if (what === 'length' && clip.id) clip.duration = clip.lengthBeats * engine.beatDur; markDirty(); if (what === 'close') { renderSession(); renderArrange(); } },
     preview: (n) => { const nd = engine.tracks.get(t.id); if (nd && nd.inst) { engine.resume(); (nd.midi || nd.inst).playNote(n, 90, engine.ctx.currentTime, 0.25); } } });
 }
@@ -1080,11 +1119,36 @@ function arrLength() {
   for (const t of S.project.tracks) for (const c of t.arrangement) end = Math.max(end, c.start + c.duration);
   return Math.max(end + engine.barDur * 8, engine.barDur * 32, engine.position() + engine.barDur * 4);
 }
+// Deepest arrangement zoom: 2 px per sample, capped so the timeline stays below the browsers'
+// maximum element width (~16 million px); very long songs therefore stop a little short of sample level.
+function maxZoom() { const sr = (engine.ctx && engine.ctx.sampleRate) || 48000; return Math.max(400, Math.min(sr * 2, 16e6 / Math.max(1, arrLength()))); }
+function zoomLabel() {
+  const sr = (engine.ctx && engine.ctx.sampleRate) || 48000, spp = sr / S.zoom; // samples per pixel
+  if (spp <= 4) return spp < 1 ? `1 sample = ${(1 / spp).toFixed(1)} px` : `1 px = ${spp.toFixed(1)} samples`;
+  const ms = 1000 / S.zoom; return ms < 10 ? `1 px = ${ms.toFixed(2)} ms` : '';
+}
+// Fine time ruler for deep zoom: ticks in ms / samples for the visible part only (redrawn on scroll)
+function drawFineRuler() {
+  const sc = $('#arrangeView .arr-scroll'), cv = $('#arrangeView .fine-ruler'); if (!sc || !cv) return;
+  const on = S.zoom * engine.beatDur > 600; cv.hidden = !on; if (!on) return;
+  const dpr = devicePixelRatio || 1, W = sc.clientWidth, H = cv.clientHeight || 12;
+  cv.style.left = sc.scrollLeft + 'px'; cv.style.width = W + 'px';
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  const t0 = sc.scrollLeft / S.zoom, span = W / S.zoom;
+  const nice = [1, 2, 5]; let step = 1e-6; outer: for (let e = -6; e < 3; e++) for (const m of nice) { step = m * Math.pow(10, e); if (step * S.zoom >= 70) break outer; }
+  g.fillStyle = 'rgba(221,214,254,.8)'; g.font = '9px sans-serif';
+  for (let k = Math.ceil(t0 / step); k * step <= t0 + span; k++) {
+    const t = k * step, x = (t - t0) * S.zoom; g.fillRect(Math.round(x), H - 5, 1, 5);
+    const lbl = step < 0.001 ? (t * 1000).toFixed(3) + ' ms' : step < 1 ? (t * 1000).toFixed(step < 0.01 ? 1 : 0) + ' ms' : t.toFixed(0) + ' s';
+    g.fillText(lbl, x + 2, H - 5);
+  }
+}
 function setZoom(z, anchorX) {
   const sc = $('#arrangeView .arr-scroll'); if (!sc) { S.zoom = z; return; }
   const r = sc.getBoundingClientRect(); const ax = anchorX == null ? r.width / 2 : anchorX - r.left;
   const t = (sc.scrollLeft + ax) / S.zoom;
-  S.zoom = Math.max(4, Math.min(400, z));
+  S.zoom = Math.max(4, Math.min(maxZoom(), z));
   renderArrange();
   const sc2 = $('#arrangeView .arr-scroll'); sc2.scrollLeft = t * S.zoom - ax; S._arrScroll = sc2.scrollLeft;
 }
@@ -1102,7 +1166,8 @@ function renderArrange() {
     h('button', { class: 'snap-btn' + (prefs.snap !== false ? ' on' : ''), title: 'Snap clips to the beat grid when placing or moving them. Hold Alt or Shift while dropping to place freely.', onclick: () => toggleSnap() }, prefs.snap !== false ? 'Snap: on' : 'Snap: off'),
     h('span', { class: 'sep' }),
     h('button', { title: 'Zoom out', onclick: () => setZoom(S.zoom / 1.5) }, '−'),
-    h('button', { title: 'Zoom in (or pinch / Ctrl+wheel)', onclick: () => setZoom(S.zoom * 1.5) }, '+'),
+    h('button', { title: 'Zoom in (or pinch / Ctrl+wheel). Zooms down to single samples.', onclick: () => setZoom(S.zoom * 1.5) }, '+'),
+    h('span', { class: 'zoom-info dim', title: 'Current zoom level' }, zoomLabel()),
     h('button', { class: 'lane-size', title: 'Track height: taller lanes show bigger waveforms (stereo clips split into L/R lanes)', 'aria-label': 'Track height', onclick: () => { const L = [0, 90, 140]; const i = (L.indexOf(prefs.laneH || 0) + 1) % L.length; prefs.laneH = L[i]; savePrefs(); renderArrange(); } }, icon('height')),
     h('button', { class: 'follow adv' + (S.follow ? ' on' : ''), title: 'Keep the playhead in view', onclick: (e) => { S.follow = !S.follow; e.target.classList.toggle('on', S.follow); } }, 'Follow'),
   ]));
@@ -1113,6 +1178,8 @@ function renderArrange() {
   const ruler = h('div', { class: 'ruler', title: 'Tap to move the playhead. Drag along the ruler to set a loop; drag the loop bar to move it, its edges to resize (Alt = no snap), double-click it to switch the loop on/off.' });
   const bd = engine.barDur; const step = S.zoom * bd < 30 ? 4 : S.zoom * bd < 60 ? 2 : 1;
   for (let b = 0; b * bd < len; b += step) ruler.append(h('span', { style: { left: (engine.gridOffset + b * bd) * S.zoom + 'px' } }, String(b + 1)));
+  if (S.zoom * engine.beatDur >= 60) { const bpb = S.project.beatsPerBar || 4; for (let k = 0; k * engine.beatDur < len; k++) if (k % bpb) ruler.append(h('span', { class: 'beat', style: { left: (engine.gridOffset + k * engine.beatDur) * S.zoom + 'px' } }, `${Math.floor(k / bpb) + 1}.${(k % bpb) + 1}`)); }
+  ruler.append(h('canvas', { class: 'fine-ruler', hidden: true }));
   ruler.append(h('div', { class: 'loop-brace', role: 'slider', 'aria-label': 'Loop region' }, h('i', { class: 'lb-l' }), h('i', { class: 'lb-r' })));
   bindLoopRuler(ruler, content);
   content.append(ruler, h('div', { class: 'loop-shade' }));
@@ -1145,7 +1212,7 @@ function renderArrange() {
   content.append(h('div', { class: 'playhead' }));
   scroll.append(content); requestAnimationFrame(updateLoopUI);
   const ov = h('canvas', { class: 'overview', title: 'Overview — tap or drag to scroll' });
-  scroll.addEventListener('scroll', () => { heads.scrollTop = scroll.scrollTop; S._arrScroll = scroll.scrollLeft; S._arrTop = scroll.scrollTop; drawOverview(); scheduleClipRedraw(); });
+  scroll.addEventListener('scroll', () => { heads.scrollTop = scroll.scrollTop; S._arrScroll = scroll.scrollLeft; S._arrTop = scroll.scrollTop; drawOverview(); scheduleClipRedraw(); drawFineRuler(); });
   body.append(heads, scroll);
   root.append(body, ov);
   // --- lane hit testing (drop + long-press)
@@ -1180,13 +1247,13 @@ function renderArrange() {
   });
   scroll.addEventListener('dblclick', (e) => { if (e.target.closest('.aclip')) return; const { pos, trackId } = hit(e.clientX, e.clientY); const t = trackId && track(trackId); if (t && t.kind === 'midi') newMidiClipArr(t, Math.floor(pos / engine.barDur) * engine.barDur); });
   scroll.addEventListener('pointerdown', (e) => { if (!e.target.closest('.aclip') && S.sel && S.sel.kind === 'arr') { S.sel = null; $$('.aclip.sel').forEach((x) => x.classList.remove('sel')); renderToolsState(); } });
-  attachPinch(scroll, { start: () => { S._pan0 = [scroll.scrollLeft, scroll.scrollTop]; return S.zoom; }, pan: (dx, dy) => { scroll.scrollTop = S._pan0[1] - dy; }, zoom: (z0, k, m) => { const nz = Math.max(4, Math.min(400, z0 * k)); if (Math.abs(nz - S.zoom) / S.zoom > 0.04) setZoom(nz, m.x); } });
+  attachPinch(scroll, { start: () => { S._pan0 = [scroll.scrollLeft, scroll.scrollTop]; return S.zoom; }, pan: (dx, dy) => { scroll.scrollTop = S._pan0[1] - dy; }, zoom: (z0, k, m) => { const nz = Math.max(4, Math.min(maxZoom(), z0 * k)); if (Math.abs(nz - S.zoom) / S.zoom > 0.04) setZoom(nz, m.x); } });
   // overview scrollbar
   const ovDrag = (e) => { const r = ov.getBoundingClientRect(); const f = (e.clientX - r.left) / r.width; scroll.scrollLeft = f * W - scroll.clientWidth / 2; };
   ov.addEventListener('pointerdown', (e) => { ov.setPointerCapture(e.pointerId); ovDrag(e); ov.onpointermove = ovDrag; });
   ov.addEventListener('pointerup', () => { ov.onpointermove = null; });
   scroll.scrollLeft = S._arrScroll || 0; scroll.scrollTop = prevTop;
-  requestAnimationFrame(drawOverview);
+  requestAnimationFrame(() => { drawOverview(); drawFineRuler(); });
 }
 function drawOverview() {
   const ov = $('#arrangeView .overview'), sc = $('#arrangeView .arr-scroll'); if (!ov || !sc) return;
@@ -1207,7 +1274,9 @@ function newMidiClipArr(t, pos) {
 function arrClip(t, c) {
   const isSel = S.sel && S.sel.kind === 'arr' && S.sel.clipId === c.id;
   const el = h('div', { class: 'aclip' + (c.type === 'midi' ? ' midi' : '') + (isSel ? ' sel' : ''), 'data-clip': c.id, style: { left: c.start * S.zoom + 'px', width: Math.max(4, c.duration * S.zoom) + 'px' }, title: (c.name || 'Clip') + ' — drag to move (Shift = no snap), long-press for options' + (c.type === 'midi' ? ', double-tap to edit notes' : '') },
-    h('div', { class: 'aclip-name' }, c.name || '', c.takes && c.takes.length > 1 ? h('span', { class: 'take-badge', title: 'Loop-recorded clip: take ' + ((c.take || 0) + 1) + ' of ' + c.takes.length }, `T${(c.take || 0) + 1}/${c.takes.length}`) : null), h('canvas'));
+    h('div', { class: 'aclip-name' }, c.name || '', c.takes && c.takes.length > 1 ? h('span', { class: 'take-badge', title: 'Loop-recorded clip: take ' + ((c.take || 0) + 1) + ' of ' + c.takes.length }, `T${(c.take || 0) + 1}/${c.takes.length}`) : null), h('canvas'),
+    c.type === 'midi' ? null : h('i', { class: 'fh fi', title: 'Fade in: drag right (Alt/Shift = free, no snap)' }),
+    c.type === 'midi' ? null : h('i', { class: 'fh fo', title: 'Fade out: drag left (Alt/Shift = free, no snap)' }));
   el._clip = c; el._track = t;
   requestAnimationFrame(() => c.type === 'midi' ? drawNotes($('canvas', el), c, t.color) : drawArrClip(el));
   el.addEventListener('dblclick', (e) => { e.stopPropagation(); if (c.type === 'midi') editMidiClip(t, c); });
@@ -1230,12 +1299,15 @@ function arrClip(t, c) {
       '-', { label: 'Delete', fn: () => clipOp('del') },
     ]);
   });
-  el.addEventListener('pointermove', (e) => { if (S.tool !== 'razor') return; const r = el.getBoundingClientRect(), p = snapPos(c.start + (e.clientX - r.left) / S.zoom, e); el.style.setProperty('--cut-x', (p - c.start) * S.zoom + 'px'); });
+  el.addEventListener('pointermove', (e) => { if (S.tool !== 'razor') { if (c.type !== 'midi' && e.pointerType !== 'touch' && !e.buttons) { const ex = e.clientX - el.getBoundingClientRect().left; el.style.cursor = el.offsetWidth > 24 && (ex < 6 || el.offsetWidth - ex < 6) ? 'ew-resize' : ''; } return; } const r = el.getBoundingClientRect(), p = snapPos(c.start + (e.clientX - r.left) / S.zoom, e); el.style.setProperty('--cut-x', (p - c.start) * S.zoom + 'px'); });
   el.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'touch' && !e.isPrimary) return;
     if (S.tool === 'razor' && e.button === 0) { e.stopPropagation(); e.preventDefault(); const r = el.getBoundingClientRect(); S.sel = { kind: 'arr', trackId: t.id, clipId: c.id }; splitClipAt(t, c, snapPos(c.start + (e.clientX - r.left) / S.zoom, e)); return; }
     S.sel = { kind: 'arr', trackId: t.id, clipId: c.id };
     $$('.aclip.sel').forEach((x) => x.classList.remove('sel')); el.classList.add('sel'); renderToolsState();
+    if (c.type !== 'midi' && e.button === 0 && e.target.classList.contains('fh')) { e.stopPropagation(); e.preventDefault(); return startClipEdit(t, c, el, e, e.target.classList.contains('fi') ? 'fadeIn' : 'fadeOut'); }
+    const ex = e.clientX - el.getBoundingClientRect().left, edgePx = e.pointerType === 'touch' ? 0 : 6;
+    if (c.type !== 'midi' && e.button === 0 && edgePx && el.offsetWidth > 24 && (ex < edgePx || el.offsetWidth - ex < edgePx)) { e.stopPropagation(); e.preventDefault(); return startClipEdit(t, c, el, e, ex < edgePx ? 'trimStart' : 'trimEnd'); }
     if (e.pointerType !== 'touch') startClipDrag({ kind: 'arr', t, c }, e, el); // touch: long-press picks the clip up (see touchDragOnHold)
   });
   touchDragOnHold(el, () => ({ kind: 'arr', t, c }));
@@ -1243,20 +1315,70 @@ function arrClip(t, c) {
   return el;
 }
 
+// ------------------------------------------------------------------ v0.5.1 micro editing
+// Trim a clip's start/end or drag its fades in the arrangement. Snaps to the beat grid unless Snap is
+// off or Alt/Shift is held (then free, rounded to 0.1 ms). One undo step per gesture.
+const MS = 0.001;
+function clipBounds(t, c) { const buf = engine.buffers.get(c.bufferId), r = clipRate(c); return { maxEnd: buf ? c.start + (buf.duration - (c.offset || 0)) / r : Infinity, minStart: Math.max(0, c.start - (c.offset || 0) / r) }; }
+function applyClipEdit(t, c, mode, pos, ev) {
+  const free = !snapOn(ev), q = (x) => free ? Math.round(x * 10000) / 10000 : snapPos(x, ev);
+  const r = clipRate(c), { maxEnd, minStart } = clipBounds(t, c), end = c.start + c.duration, minLen = 0.005;
+  if (mode === 'trimStart') { const ns = Math.max(minStart, Math.min(end - minLen, q(pos))); c.offset = Math.max(0, (c.offset || 0) + (ns - c.start) * r); c.duration = end - ns; c.start = ns; }
+  else if (mode === 'trimEnd') { const ne = Math.min(maxEnd, Math.max(c.start + minLen, q(pos))); c.duration = ne - c.start; }
+  else if (mode === 'fadeIn') c.fadeIn = Math.max(0, Math.min(c.duration - (c.fadeOut || 0), q(pos) - c.start));
+  else if (mode === 'fadeOut') c.fadeOut = Math.max(0, Math.min(c.duration - (c.fadeIn || 0), end - q(pos)));
+  if (c.fadeIn > c.duration) c.fadeIn = c.duration; if ((c.fadeIn || 0) + (c.fadeOut || 0) > c.duration) c.fadeOut = Math.max(0, c.duration - (c.fadeIn || 0));
+}
+function startClipEdit(t, c, el, e, mode) {
+  const content = el.closest('.arr-content'); if (!content) return;
+  history.push({ trimStart: 'Trim clip start', trimEnd: 'Trim clip end', fadeIn: 'Fade in', fadeOut: 'Fade out' }[mode]);
+  const move = (ev) => {
+    ev.preventDefault(); const pos = (ev.clientX - content.getBoundingClientRect().left) / S.zoom;
+    applyClipEdit(t, c, mode, pos, ev);
+    el.style.left = c.start * S.zoom + 'px'; el.style.width = Math.max(4, c.duration * S.zoom) + 'px'; drawArrClip(el);
+    engine.rescheduleTrack(t); markDirty(); if (S.clipView && S.clipView.draw) S.clipView.draw();
+  };
+  const up = () => { window.removeEventListener('pointermove', move, true); window.removeEventListener('pointerup', up, true); window.removeEventListener('pointercancel', up, true); el._dragMoved = true; if (S.bottom === 'clip') renderDevices(); };
+  window.addEventListener('pointermove', move, true); window.addEventListener('pointerup', up, true); window.addEventListener('pointercancel', up, true);
+}
+// Arrow-key nudge of the selected arrangement clip: grid step (beat), Alt = 1 ms, Alt+Shift = 10 ms.
+function nudgeSelected(dir, ev) {
+  const sc = S.sel && S.sel.kind === 'arr' ? selectedClip() : null; if (!sc || !sc.c) return false;
+  const step = ev.altKey ? (ev.shiftKey ? 10 : 1) * MS : engine.beatDur; const { t, c } = sc;
+  change('Nudge clip', () => { c.start = Math.max(0, Math.round((c.start + dir * step) * 1e6) / 1e6); }, 'nudge' + c.id);
+  engine.rescheduleTrack(t);
+  const el = $(`#arrangeView .aclip[data-clip="${c.id}"]`); if (el) { el.style.left = c.start * S.zoom + 'px'; if (c.type !== 'midi') drawArrClip(el); }
+  if (S.bottom === 'clip') renderDevices();
+  return true;
+}
+// exact numbers for a selected arrangement clip (clip detail panel)
+function setClipNumber(t, c, field, v) {
+  if (!isFinite(v)) return;
+  change({ start: 'Clip position', duration: 'Clip length', offset: 'Clip offset', fadeIn: 'Fade in', fadeOut: 'Fade out' }[field] || 'Clip', () => {
+    const r = clipRate(c), buf = engine.buffers.get(c.bufferId), bl = buf ? buf.duration : Infinity;
+    if (field === 'start') c.start = Math.max(0, v);
+    else if (field === 'duration') c.duration = Math.max(0.005, Math.min((bl - (c.offset || 0)) / r, v));
+    else if (field === 'offset') { c.offset = Math.max(0, Math.min(bl - 0.005, v)); c.duration = Math.min(c.duration, (bl - c.offset) / r); }
+    else if (field === 'fadeIn') c.fadeIn = Math.max(0, Math.min(c.duration - (c.fadeOut || 0), v));
+    else if (field === 'fadeOut') c.fadeOut = Math.max(0, Math.min(c.duration - (c.fadeIn || 0), v));
+  });
+  engine.rescheduleTrack(t); if (S.view === 'arrange') renderArrange(); renderDevices();
+}
+
 // ------------------------------------------------------------------ v0.3 free clip placement
 // One placement model for everything: audio files, arrangement clips and session clips can go on any track,
 // any time position (snapped to the beat grid unless Snap is off or Alt/Shift is held) or any session slot, and
 // empty space creates a new track. The clip that lands wins: clips underneath on the same track are trimmed /
-// split / removed (Ableton-style). Every placement is one undo step.
+// split / removed. Every placement is one undo step.
 // ------------------------------------------------------------------ v0.3.1 arrangement loop
 // project.loop = { on, start, end } in seconds. Saved with the project; every edit is one undo step.
 function loopSnap(pos, ev, mode = 'round') {
-  pos = Math.max(0, pos); if (ev && ev.altKey) return pos; if (prefs.snap === false && !(ev && ev.forceSnap)) return pos;
+  pos = Math.max(0, pos); if (ev && (ev.altKey || ev.shiftKey)) return pos; if (prefs.snap === false && !(ev && ev.forceSnap)) return pos;
   const q = engine.beatDur * S.zoom >= 10 ? engine.beatDur : engine.barDur, o = engine.gridOffset;
   const f = mode === 'floor' ? Math.floor : mode === 'ceil' ? Math.ceil : Math.round;
   return Math.max(0, f((pos - o) / q + (mode === 'round' ? 0 : 1e-6 * (mode === 'floor' ? 1 : -1))) * q + o);
 }
-function loopMinLen(ev) { return ev && ev.altKey || prefs.snap === false ? 0.05 : (engine.beatDur * S.zoom >= 10 ? engine.beatDur : engine.barDur); }
+function loopMinLen(ev) { return ev && (ev.altKey || ev.shiftKey) || prefs.snap === false ? 0.05 : (engine.beatDur * S.zoom >= 10 ? engine.beatDur : engine.barDur); }
 function applyLoop(label, fn) { change(label, fn); engine.setLoop(); updateLoopUI(); }
 function toggleLoop(force) {
   const L = S.project.loop; const on = force != null ? !!force : !L.on;
@@ -1326,7 +1448,7 @@ function useTake(t, c, i) {
   change('Pick take', () => { Object.assign(c, c.takes[i]); c.take = i; engine.rescheduleTrack(t); });
   S.clipView = null; renderArrange(); renderDevices(); toast(`Using take ${i + 1} of ${c.takes.length}`, 1200);
 }
-function setView(v) { S.view = v; renderAll(); }
+function setView(v) { S.view = v === 'arrange' ? 'arrange' : 'session'; renderAll(); }
 const snapOn = (ev) => prefs.snap !== false && !(ev && (ev.altKey || ev.shiftKey));
 function snapPos(pos, ev) { pos = Math.max(0, pos); if (!snapOn(ev)) return pos; const q = engine.beatDur; return Math.max(0, Math.round((pos - engine.gridOffset) / q) * q + engine.gridOffset); }
 function toggleSnap() { prefs.snap = prefs.snap === false; savePrefs(); $$('.snap-btn').forEach((b) => { b.classList.toggle('on', prefs.snap !== false); b.textContent = prefs.snap !== false ? 'Snap: on' : 'Snap: off'; }); toast(prefs.snap !== false ? 'Snap to beat grid on (hold Alt/Shift to place freely)' : 'Snap off — clips go exactly where you drop them', 1600); }
@@ -1341,9 +1463,11 @@ function trimUnder(t, top) {
     if (oa >= a - eps && ob <= b + eps) return false;           // fully covered: remove
     if (oa < a && ob > b) {                                     // top sits inside: split into two
       const right = { ...JSON.parse(JSON.stringify(o)), id: uid('c'), start: b, offset: (o.offset || 0) + (b - oa) * clipRate(o), duration: ob - b };
+      delete right.fadeIn; delete o.fadeOut;
       o.duration = a - oa; add.push(right); return true;
     }
-    if (oa < a) { o.duration = a - oa; return true; }           // tail covered: shorten
+    if (oa < a) { o.duration = a - oa; delete o.fadeOut; return true; } // tail covered: shorten
+    delete o.fadeIn;
     const cut = b - oa; o.start = b; o.offset = (o.offset || 0) + cut * clipRate(o); o.duration -= cut; return true; // head covered
   });
   t.arrangement.push(...add);
@@ -1357,7 +1481,7 @@ function slotToArrClip(sc, start) {
   delete c.loopLength; delete c.loopStart; return c;
 }
 function arrToSlotClip(c) {
-  const s = JSON.parse(JSON.stringify(c)); delete s.id; delete s.start; delete s.offset; delete s.duration;
+  const s = JSON.parse(JSON.stringify(c)); delete s.id; delete s.start; delete s.offset; delete s.duration; delete s.fadeIn; delete s.fadeOut;
   if (c.type === 'midi') { s.lengthBeats = c.lengthBeats || Math.max(1, Math.round(c.duration / engine.beatDur)); }
   else { s.loopStart = c.offset || 0; s.loopLength = c.duration * clipRate(c); }
   return s;
@@ -1559,7 +1683,7 @@ engine.on('audition', (A) => {
 // ------------------------------------------------------------------ device panel (compact cards, expand on demand)
 const FX_COLORS = { pitch: '#3ecf8e', eq: '#8B5CF6', compressor: '#4a9cff', maximizer: '#6366F1', limiter: '#d36bff', distortion: '#EF4444', amp: '#F43F5E', delay: '#2fc6d6', reverb: '#14B8A6', chorus: '#60A5FA', autopan: '#A78BFA', tremolo: '#ff5fa2', rack: '#9aa4ad' };
 
-// ------------------------------------------------------------------ clip detail view (Ableton-style, bottom panel)
+// ------------------------------------------------------------------ clip detail view (bottom panel)
 // Selecting an audio clip shows it here: large zoomable waveform, start/end (or loop) markers, gain,
 // transpose (repitch), transient markers (the same detector Quantize uses) and the beat grid.
 S.bottom = 'devices';
@@ -1591,7 +1715,7 @@ function renderClipDetail(head, panel, sc) {
     onclick: () => { if (engine.audition && engine.audition.c === c) engine.stopAudition(); else { engine.resume(); startAudition(t, c, { key: 'detail' }); } } }, icon('play'), ' Preview');
   const takesUI = isArr && c.takes && c.takes.length > 1 ? h('span', { class: 'takes', role: 'group', 'aria-label': 'Loop takes' }, h('span', { class: 'dim' }, 'Take'),
     c.takes.map((k, i) => h('button', { class: 'small take' + (i === (c.take || 0) ? ' on' : ''), 'aria-pressed': String(i === (c.take || 0)), title: `Use take ${i + 1} (${k.duration.toFixed(1)} s)`, onclick: () => useTake(t, c, i) }, String(i + 1)))) : null;
-  head.append(prevBtn, takesUI, trBtn,
+  head.append(...[prevBtn, takesUI, trBtn].filter(Boolean),
     h('button', { class: 'small', title: 'Quantize: move the hits onto the beat grid', onclick: () => quantizeDialog() }, 'Quantize…'),
     h('button', { class: 'small', title: 'Detect this clip\'s tempo (BPM)', onclick: () => clipTempoDialog(t, c, isArr ? 'arr' : 'slot') }, 'BPM…', lockBadge('tempo.detect')),
     h('button', { class: 'small', title: 'Zoom out', onclick: () => zoom(1.6) }, '−'), h('button', { class: 'small', title: 'Zoom in (or pinch / Ctrl+wheel)', onclick: () => zoom(1 / 1.6) }, '+'),
@@ -1603,12 +1727,25 @@ function renderClipDetail(head, panel, sc) {
   const trK = createKnob({ key: 'transpose', label: 'Transpose', min: -24, max: 24, def: 0, step: 1, unit: 'st', help: 'Repitch in semitones (pitch and speed change together, like a tape)' }, st, (v) => { history.push('Transpose', 'tp' + (c.id || c.bufferId)); c.transpose = Math.round(v) + (Math.round(((c.transpose || 0) - Math.round(c.transpose || 0)) * 100)) / 100; live('transpose'); draw(); });
   const dtK = createKnob({ key: 'detune', label: 'Detune', min: -50, max: 50, def: 0, step: 1, unit: 'ct', help: 'Fine repitch in cents' }, ct, (v) => { history.push('Detune', 'dt' + (c.id || c.bufferId)); c.transpose = Math.round(c.transpose || 0) + Math.round(v) / 100; live('transpose'); draw(); });
   const info = h('div', { class: 'clip-info hint' });
-  ctrls.append(gainK, trK, dtK, info);
+  // exact numbers (seconds with ms precision; fades in ms). Enter or leaving the field applies it.
+  const numF = (label, val, field, { scale = 1, step = 0.001, title } = {}) => h('label', { class: 'cnum', title },
+    h('span', {}, label), h('input', { type: 'number', step, min: 0, value: String(Math.round(val * scale * 1000) / 1000), 'data-field': field,
+      onchange: (e) => { const v = parseFloat(e.target.value); if (!isFinite(v)) return; if (isArr) setClipNumber(t, c, field, v / scale); else setSlotLoop(field, v / scale); } }));
+  const setSlotLoop = (field, v) => { change('Loop markers', () => { if (field === 'loopStart') { const end = (c.loopStart || 0) + (c.loopLength || buf.duration); c.loopStart = Math.max(0, Math.min(buf.duration - 0.005, v)); c.loopLength = Math.max(0.005, Math.min(buf.duration - c.loopStart, end - c.loopStart)); } else c.loopLength = Math.max(0.005, Math.min(buf.duration - (c.loopStart || 0), v)); }); live('loop'); renderDevices(); };
+  const nums = h('div', { class: 'clip-nums', role: 'group', 'aria-label': 'Exact clip numbers' },
+    isArr ? [numF('Position s', c.start, 'start', { title: 'Where the clip starts on the timeline (seconds). ' + fmtPos(c.start) }),
+      numF('Length s', c.duration, 'duration', { title: 'Clip length on the timeline (seconds)' }),
+      numF('Offset s', c.offset || 0, 'offset', { title: 'Where playback starts inside the audio file (seconds)' }),
+      numF('Fade in ms', c.fadeIn || 0, 'fadeIn', { scale: 1000, step: 0.1, title: 'Fade in length (milliseconds). Also: drag the small handle at the clip\'s top-left corner.' }),
+      numF('Fade out ms', c.fadeOut || 0, 'fadeOut', { scale: 1000, step: 0.1, title: 'Fade out length (milliseconds). Also: drag the handle at the top-right corner.' })]
+      : [numF('Loop start s', c.loopStart || 0, 'loopStart', { title: 'Loop start inside the audio file (seconds)' }), numF('Loop length s', c.loopLength || buf.duration, 'loopLength', { title: 'Loop length (seconds)' })]);
+  ctrls.append(gainK, trK, dtK, nums, info);
   const wrap = h('div', { class: 'clip-wave-wrap' });
   const wave = h('canvas', { class: 'clip-wave' }), over = h('canvas', { class: 'clip-over' });
   wrap.append(wave, over);
   panel.append(h('div', { class: 'clip-detail' }, ctrls, wrap));
-  function zoom(f, at = 0.5) { const span = V.v1 - V.v0, c0 = V.v0 + span * at; const ns = Math.max(0.005, Math.min(buf.duration, span * f)); V.v0 = Math.max(0, Math.min(buf.duration - ns, c0 - ns * at)); V.v1 = V.v0 + ns; draw(); }
+  const minSpan = Math.min(buf.duration, 32 / buf.sampleRate); // deepest zoom: 32 samples across the view
+  function zoom(f, at = 0.5) { const span = V.v1 - V.v0, c0 = V.v0 + span * at; const ns = Math.max(minSpan, Math.min(buf.duration, span * f)); V.v0 = Math.max(0, Math.min(buf.duration - ns, c0 - ns * at)); V.v1 = V.v0 + ns; draw(); }
   const tx = (sec) => (sec - V.v0) / (V.v1 - V.v0) * wrap.clientWidth;
   const sx = (x) => V.v0 + x / Math.max(1, wrap.clientWidth) * (V.v1 - V.v0);
   function draw() {
@@ -1625,6 +1762,8 @@ function renderClipDetail(head, panel, sc) {
     g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(0, 0, Math.max(0, tx(a)), H); g.fillRect(tx(b), 0, W, H);
     if (V.tr) { g.fillStyle = 'rgba(221,214,254,.75)'; for (const s of transientsOf(buf)) { if (s < V.v0 || s > V.v1) continue; const x = tx(s); g.fillRect(Math.round(x), 0, 1, H); g.beginPath(); g.moveTo(x - 4, 0); g.lineTo(x + 4, 0); g.lineTo(x, 6); g.fill(); } }
     const flag = (x, col, label, right) => { g.fillStyle = col; g.fillRect(Math.round(x) - 1, 0, 2, H); g.beginPath(); if (right) { g.moveTo(x, 0); g.lineTo(x - 12, 0); g.lineTo(x, 12); } else { g.moveTo(x, 0); g.lineTo(x + 12, 0); g.lineTo(x, 12); } g.fill(); g.font = '10px sans-serif'; g.fillText(label, right ? x - 34 : x + 14, 10); };
+    if (isArr && (c.fadeIn || c.fadeOut)) { const r0 = rate(); g.strokeStyle = 'rgba(255,255,255,.75)'; g.lineWidth = 1; g.beginPath();
+      if (c.fadeIn) { g.moveTo(tx(a), H); g.lineTo(tx(a + c.fadeIn * r0), 0); } if (c.fadeOut) { g.moveTo(tx(b - c.fadeOut * r0), 0); g.lineTo(tx(b), H); } g.stroke(); }
     flag(tx(a), '#A78BFA', isArr ? 'Start' : 'Loop', false); flag(tx(b), '#EF4444', isArr ? 'End' : 'Loop end', true);
     // playhead
     const n = engine.tracks.get(t.id); let ph = null;
@@ -1635,7 +1774,9 @@ function renderClipDetail(head, panel, sc) {
     if (ph != null && ph >= V.v0 && ph <= V.v1) { g.fillStyle = '#fff'; g.fillRect(Math.round(tx(ph)), 0, 1.5, H); }
     if (engine.audition && engine.audition.c === c) { const ap = engine.auditionPos(); if (ap != null && ap >= V.v0 && ap <= V.v1) { g.fillStyle = '#EF4444'; g.fillRect(Math.round(tx(ap)), 0, 2, H); } }
     g.restore();
-    info.textContent = `${isArr ? 'Start' : 'Loop'} ${a.toFixed(3)} s · ${isArr ? 'End' : 'Length'} ${(isArr ? b : b - a).toFixed(3)} s · ${buf.numberOfChannels > 1 ? 'Stereo' : 'Mono'} ${Math.round(buf.sampleRate / 100) / 10} kHz${c.bpm ? ' · ' + c.bpm + ' BPM' : ''}${c.transpose ? ' · repitch ' + (c.transpose > 0 ? '+' : '') + c.transpose.toFixed(2) + ' st' : ''}`;
+    const spp = (V.v1 - V.v0) * buf.sampleRate / Math.max(1, W);
+    info.dataset.spp = spp.toFixed(3);
+    info.textContent = (spp < 4 ? `Sample view (${spp < 1 ? (1 / spp).toFixed(1) + ' px per sample' : spp.toFixed(1) + ' samples per px'}) · ` : '') + `${isArr ? 'Start' : 'Loop'} ${a.toFixed(3)} s · ${isArr ? 'End' : 'Length'} ${(isArr ? b : b - a).toFixed(3)} s · ${buf.numberOfChannels > 1 ? 'Stereo' : 'Mono'} ${Math.round(buf.sampleRate / 100) / 10} kHz${c.bpm ? ' · ' + c.bpm + ' BPM' : ''}${c.transpose ? ' · repitch ' + (c.transpose > 0 ? '+' : '') + c.transpose.toFixed(2) + ' st' : ''}`;
   }
   V.draw = draw;
   // interaction: drag markers, pan, wheel/pinch zoom, double-tap = fit
@@ -1652,15 +1793,15 @@ function renderClipDetail(head, panel, sc) {
   over.addEventListener('pointermove', (e) => {
     if (!pts.has(e.pointerId)) { const [a, b] = region(); over.style.cursor = Math.abs(e.offsetX - tx(a)) < 10 || Math.abs(e.offsetX - tx(b)) < 10 ? 'ew-resize' : 'grab'; return; }
     pts.set(e.pointerId, e.offsetX);
-    if (pinch && pts.size === 2) { const [p1, p2] = [...pts.values()]; const f = pinch.d / (Math.abs(p1 - p2) || 1); const span = Math.max(0.005, Math.min(buf.duration, (pinch.v1 - pinch.v0) * f)); V.v0 = Math.max(0, Math.min(buf.duration - span, pinch.mid - span / 2)); V.v1 = V.v0 + span; draw(); return; }
+    if (pinch && pts.size === 2) { const [p1, p2] = [...pts.values()]; const f = pinch.d / (Math.abs(p1 - p2) || 1); const span = Math.max(minSpan, Math.min(buf.duration, (pinch.v1 - pinch.v0) * f)); V.v0 = Math.max(0, Math.min(buf.duration - span, pinch.mid - span / 2)); V.v1 = V.v0 + span; draw(); return; }
     if (!drag) return;
     const sec = Math.max(0, Math.min(buf.duration, sx(e.offsetX)));
     if (drag.m === 'pan' && Math.abs(e.offsetX - drag.x) > 4) drag.moved = true;
     if (drag.m === 'pan') { const d = (e.offsetX - drag.x) / wrap.clientWidth * (drag.v1 - drag.v0); const span = drag.v1 - drag.v0; V.v0 = Math.max(0, Math.min(buf.duration - span, drag.v0 - d)); V.v1 = V.v0 + span; draw(); return; }
     const r = rate();
     if (isArr) {
-      if (drag.m === 'start') { const end = (c.offset || 0) + c.duration * r; const ns = Math.min(sec, end - 0.01); const dOff = ns - (c.offset || 0); c.start = Math.max(0, c.start + dOff / r); c.offset = ns; c.duration = (end - ns) / r; }
-      else { const ne = Math.max(sec, (c.offset || 0) + 0.01); c.duration = (ne - (c.offset || 0)) / r; }
+      if (drag.m === 'start') { const end = (c.offset || 0) + c.duration * r; const ns = Math.min(sec, end - 0.001); const dOff = ns - (c.offset || 0); c.start = Math.max(0, c.start + dOff / r); c.offset = ns; c.duration = (end - ns) / r; }
+      else { const ne = Math.max(sec, (c.offset || 0) + 0.001); c.duration = (ne - (c.offset || 0)) / r; }
       engine.rescheduleTrack(t); if (S.view === 'arrange') { const el = $(`#arrangeView .aclip[data-clip="${c.id}"]`); if (el) { el.style.left = c.start * S.zoom + 'px'; el.style.width = Math.max(4, c.duration * S.zoom) + 'px'; drawArrClip(el); } }
     } else {
       if (drag.m === 'start') { const end = (c.loopStart || 0) + (c.loopLength || buf.duration); const ns = Math.min(sec, end - 0.01); c.loopStart = ns; c.loopLength = end - ns; }
@@ -2069,7 +2210,7 @@ function randPopover(anchor, getTargets, tid, go) {
 }
 
 // ------------------------------------------------------------------ device browser (desktop sidebar)
-const INST_HELP = { synth: 'Analog-style synth: 3 oscillators, filter, envelopes.', wavetable: 'Wavetable synth: morphing tables, unison, LFO.', drums: 'Drum kit: 128 pads with built-in drum sounds; put your own samples on any pad.' };
+const INST_HELP = { synth: 'Analog synth: 3 oscillators, filter, envelopes.', wavetable: 'Wavetable synth: morphing tables, unison, LFO.', drums: 'Drum kit: 128 pads with built-in drum sounds; put your own samples on any pad.' };
 function browserSections() {
   const sup = pluginSupport();
   const plug = S.plugins || { list: [], status: '' };
@@ -2167,7 +2308,7 @@ function initPlugins() {
       $$('.pl-row', c).forEach((row) => { const i = +row.dataset.i, v = r.values[i]; if (v != null && row.setValue && !row.contains(document.activeElement)) { row.setValue(v); const p = r.byIndex.get(i); const val = $('.pl-val', row); if (p && p.text && val) val.textContent = p.text; } }); } });
   S.plugins = S.pluginApi;
   S.pluginApi.paramHook = (pid, i, v) => { if (!seqView) return false; const t = S.project && S.project.tracks.find((x) => (x.plugins || []).some((e) => e.id === pid)); return !!t && seqView.capture(t.id, 'plugin:' + pid, String(i), v); };
-  S.pluginApi.init().then((ok) => { if (S.project) renderDevices(); if (ok) engineMidi.attach(S.pluginApi.client).then(() => { if (seqView && S.project) renderAll(); }); });
+  S.pluginApi.init().then((ok) => { if (S.project) renderDevices(); if (ok) { engineMidi.attachIn(S.pluginApi.client); if (engineMidi.inAvailable && S.project && S.project.tracks.some((t) => t.arm && t.kind === 'midi')) MIDI.init(); engineMidi.attach(S.pluginApi.client).then(() => { if (seqView && S.project) renderAll(); }); } });
 }
 let browser = null;
 function initBrowser() {
@@ -2435,7 +2576,7 @@ async function audioSettings() {
     h('p', {}, `Inputs detected: ${S.devices.inputs.length} `, needPerm ? h('button', { type: 'button', onclick: async () => { try { await engine.requestMicPermission(); closeDialog(); audioSettings(); renderAll(); } catch (e) { toast('Permission denied: ' + e.message); } } }, 'Allow microphone to list inputs') : ''),
     h('ul', { class: 'dev-list' }, S.devices.inputs.map((d) => h('li', {}, d.label || '(unnamed input)'))),
     h('label', {}, 'Extra record latency compensation (ms) ', lat),
-    h('p', {}, 'MIDI: ' + (MIDI.supported ? (MIDI.access ? `${MIDI.inputs().length} input(s): ${MIDI.inputs().map((i) => i.name).join(', ') || '—'}` : 'available (connects when you arm a MIDI track)') : MIDI.notice()) + (engineMidi.available ? ` MIDI out via the audio engine: ${engineMidi.ports.map((p) => p.name).join(', ') || 'no output ports found'}.` : '')),
+    h('p', {}, 'MIDI: ' + (MIDI.supported ? ((MIDI.access || MIDI.engineInputs.length) ? `${MIDI.inputs().length} input(s): ${MIDI.inputs().map((i) => i.name).join(', ') || '—'}` : 'available (connects when you arm a MIDI track)') : MIDI.notice()) + (engineMidi.available ? ` MIDI out via the audio engine: ${engineMidi.ports.map((p) => p.name).join(', ') || 'no output ports found'}.` : '')),
     h('p', { class: 'hint' }, 'Choose input device and channel per track in the session mixer strip. Use headphones when monitoring.'));
   openDialog('Audio & MIDI settings', content);
 }
@@ -2576,8 +2717,7 @@ function menuActions() {
     ['User manual (PDF)', openManual],
     ['-'],
     ['Install app', installApp],
-    ['About', () => openDialog('About Auduio', h('div', {}, h('p', {}, 'Auduio v0.5.0 (formerly WebDAW) — a DAW built on the Web Audio API, now with a step sequencer, a 128-pad drum rack with your own samples, clip cutting and hardware MIDI out. The desktop app also hosts VST3 and CLAP plugins. Works offline once loaded; makes no network requests besides loading itself. Projects are saved in this browser (IndexedDB); use Export/Import to move them. Press Help, then User manual, for the full guide.'),
-      h('p', { class: 'hint' }, 'Shortcuts: Space play/stop · R record · M metronome · Tab switch view · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z or Ctrl+Y redo · Ctrl/Cmd+C/V/D copy/paste/duplicate · Delete remove clip · Ctrl/Cmd+E or S split at playhead · X cut tool · B browser.')))],
+    ['About', () => aboutDialog()],
   ];
   const m = $('#menu'); m.innerHTML = '';
   for (const [label, fn] of items) m.append(label === '-' ? h('hr') : h('button', { onclick: () => { closeMenus(); fn(); } }, label));
@@ -2595,10 +2735,9 @@ function renderAll() {
   syncBottomToSelection();
   $('#sessionView').hidden = S.view !== 'session';
   $('#arrangeView').hidden = S.view !== 'arrange';
-  $('#seqView').hidden = S.view !== 'seq';
   $$('.views button').forEach((b) => b.classList.toggle('on', b.dataset.view === S.view));
   renderSession(); renderArrange(); renderDevices(); updateTransportUI(); updateKeyButton();
-  if (S.view === 'seq') seqView.render();
+  seqView.render();
   if (typeof phone !== 'undefined' && phone.active) phone.render();
   syncMonitor();
 }
@@ -2740,14 +2879,15 @@ function bindUI() {
     }
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
     else if (k === 'r') toggleRecord();
-    else if (k === 'm') $('#btnMetro').click();
+    else if (k === 'm') { if (e.shiftKey) $('#btnMetro').click(); else compKeys.toggle(); }
     else if (k === 't') tapTempo();
     else if (k === 's') clipOp('split');
     else if (k === 'x') setTool('razor');
     else if (e.key === 'Escape' && S.tool) setTool(S.tool);
     else if (k === 'b' && browser && !phone.active) browser.toggle();
-    else if (e.key === 'Tab') { e.preventDefault(); S.view = S.view === 'session' ? 'arrange' : S.view === 'arrange' ? 'seq' : 'session'; renderAll(); }
+    else if (e.key === 'Tab') { e.preventDefault(); S.view = S.view === 'session' ? 'arrange' : 'session'; renderAll(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') { if (S.sel) { e.preventDefault(); clipOp('del'); } }
+    else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.target.closest('[role=slider], .knob, .fader, button[role=tab]')) { if (nudgeSelected(e.key === 'ArrowLeft' ? -1 : 1, e)) e.preventDefault(); }
     else if (e.key === 'Escape') { closeMenus(); if (helpMode) toggleHelp(); if (S.carry) { S.carry = null; renderCarryBar(); } engine.stopAudition(); }
   });
   // drag & drop outside the arrangement: projects or audio as new tracks
@@ -2842,12 +2982,12 @@ function actionSheet(title, items) {
 }
 drumRack = createDrumRack({ S, engine, change, uid, noteEvent: (t, n, v, on) => noteEvent(t, n, v, on), contextMenu: (x, y, items) => contextMenu(x, y, items),
   sheet: (title, items) => actionSheet(title, items), usedNotes, library, markChanged: () => { if (browser) browser.render(); },
-  refreshSeq: () => { if (S.view === 'seq' || (phone && phone.active && phone.tab === 'seq')) seqView.render(); } });
+  refreshSeq: () => seqView.render() });
 window.__daw.drumRack = drumRack; window.__daw.library = library;
 seqView = createSeqView({ drumRack, S, engine, change, markDirty, track, renderAll: () => renderAll(), renderDevices: () => renderDevices(), addTrack: (n, k, i) => addTrack(n, k, i),
   select: (id) => { S.selected = id; syncMonitor(); }, randButtons, loopInfo, toggleLoop, paramCatalog, SCALES,
-  phoneActive: () => phone.active, phoneTab: () => phone.tab, phoneRender: () => phone.render() });
-seqView.mount($('#seqView'));
+  phoneActive: () => phone.active, phoneSeqOpen: () => phone.seqOpen, phoneRender: () => phone.render(), onLayout: () => { if (S.project) renderArrange(); } });
+seqView.mount($('#seqPanel'));
 engine.seq.midiOut = createMidiOut(() => engine.ctx);
 engine.seq.onSwitch = () => { markDirty(); };
 engine.pluginLock = (t, pid, i, v, at, dur) => S.pluginApi && S.pluginApi.lockParam && S.pluginApi.lockParam(pid, i, v, at, dur);
@@ -2860,6 +3000,10 @@ const phone = createPhone({ seqView, drumRack,
 function applyPhoneMode() { const on = wantsPhone(); if (on !== phone.active) { phone.setActive(on); if (!on) renderAll(); } }
 addEventListener('resize', () => { if (S.project && (prefs.phoneMode || 'auto') === 'auto') applyPhoneMode(); });
 window.__daw.phone = phone; window.__daw.tutorial = tutorial; window.__daw.seq = seqView;
+const compKeys = createCompKeys({ targets: () => (S.project ? midiTargets('screen') : []), noteOn: (t, n, v) => noteEvent(t, n, v, true), noteOff: (t, n) => noteEvent(t, n, 0, false),
+  hint: (m) => toast(m, 3000), onToggle: (on) => { const b = $('#btnKeys'); if (b) { b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); } haptic(8); } });
+window.__daw.compKeys = compKeys;
+{ const b = $('#btnKeys'); if (b) { b.addEventListener('click', () => compKeys.toggle()); b.classList.toggle('on', compKeys.on); b.setAttribute('aria-pressed', String(compKeys.on)); } }
 
 bindUI();
 ['pointerdown', 'touchend', 'keydown'].forEach((ev) => document.addEventListener(ev, () => { if (engine.ctx && engine.ctx.state !== 'running') engine.resume(); }, { passive: true }));

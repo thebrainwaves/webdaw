@@ -5,6 +5,8 @@
 // audio, scaled by the clip's playback rate; MIDI clips use rate 1, so offset is in seconds of beat time).
 const EPS = 1e-6;
 const clone = (c) => JSON.parse(JSON.stringify(c));
+// fades belong to the clip's outer edges: a cut end loses its fade (the new edge starts/ends at full level)
+export const dropFade = (c, which) => { if (c && c[which] != null) delete c[which]; return c; };
 export const defaultRate = (c) => (c.type === 'midi' ? 1 : Math.pow(2, (c.transpose || 0) / 12));
 
 // Split clip c (in list) at time p. Returns the new right-hand clip, or null when p is not inside c.
@@ -13,6 +15,7 @@ export function splitClip(list, c, p, newId, rate = defaultRate) {
   const cut = p - c.start;
   const right = { ...clone(c), id: newId(), start: p, offset: (c.offset || 0) + cut * rate(c), duration: c.duration - cut };
   if (right.takes) right.takes = clone(c.takes);
+  dropFade(right, 'fadeIn'); dropFade(c, 'fadeOut');
   c.duration = cut; list.push(right);
   return right;
 }
@@ -38,9 +41,11 @@ export function deleteSection(list, a, b, newId, { ripple = false } = {}, rate =
     if (oa >= a - EPS && ob <= b + EPS) continue;                            // inside: removed
     if (oa < a && ob > b) {                                                  // spans: keep both ends
       const right = { ...clone(o), id: newId(), start: ripple ? a : b, offset: (o.offset || 0) + (b - oa) * rate(o), duration: ob - b };
+      dropFade(right, 'fadeIn'); dropFade(o, 'fadeOut');
       o.duration = a - oa; out.push(o, right); continue;
     }
-    if (oa < a) { o.duration = a - oa; out.push(o); continue; }             // tail inside: shorten
+    if (oa < a) { o.duration = a - oa; dropFade(o, 'fadeOut'); out.push(o); continue; } // tail inside: shorten
+    dropFade(o, 'fadeIn');
     const cut = b - oa; o.offset = (o.offset || 0) + cut * rate(o); o.duration -= cut; o.start = ripple ? a : b; out.push(o); // head inside
   }
   return out;

@@ -5,5 +5,5 @@ src-tauri/gen/
 screenshots/console.log
 release/
 src-tauri/binaries/
-engine/build/
 engine-rs/target/
+engine-rs/test/last-results*.json

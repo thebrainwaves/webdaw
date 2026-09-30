@@ -1,4 +1,5 @@
-// Step sequencer view (Squarp Pyramid / Hapax inspired). Desktop: the "Seq" main view. Phone: the "Steps" tab.
+// Step sequencer panel. Desktop: a docked, resizable, collapsible side panel on the right, visible in both Session
+// and Arrangement, following the selected track. Phone: a slide-out side panel ("Steps" button in the top bar).
 // Layout, top to bottom: toolbar (on/off, output, rate, length, swing, record, p-lock, randomize), pattern
 // slots A-P with the song chain, the 16-step page grid (or drum rows), one value lane, and the step inspector.
 // All edits go through api.change() so undo works; the audio side is sequencer.js + Engine.scheduleMidi.
@@ -18,9 +19,18 @@ export function createSeqView(api) {
   const { S, engine } = api;
   const ui = S.seqUI = { page: 0, sel: [], lane: 'v', stepRec: false, liveRec: false, plock: false, follow: true, oct: 4, cursor: 0, clip: null };
   const live = { open: new Map(), pass: 0, lastAt: 0, lastSi: -1 };
-  let host = null, phoneMode = false, shown = { tid: null, page: -1, pi: -1 };
-
-  const PS = () => (phoneMode && isDrum(cur()) ? 8 : PAGE);
+  let host = null, body = null, phoneMode = false, shown = { tid: null, page: -1, pi: -1 };
+  const PMIN = 300, PMAX = 900, PDEF = 420;
+  const panelW = () => Math.max(PMIN, Math.min(PMAX, +prefs.seqW || PDEF));
+  // Narrow windows (< 900 px, full layout): the panel starts folded and opens as an overlay, so it never
+  // covers the tracks by default. Opening it there is remembered for this session only.
+  const NARROW_WIN = 900; let narrowOpen = false;
+  const smallWin = () => typeof innerWidth === 'number' && innerWidth < NARROW_WIN;
+  const panelOpen = () => (smallWin() ? narrowOpen : prefs.seqOpen !== false);
+  const narrow = () => phoneMode || panelW() < 640;
+  const cols = () => (narrow() ? 8 : PAGE);
+  const PS = () => (narrow() && isDrum(cur()) ? 8 : PAGE);
+  const panelVisible = () => !!(host && panelOpen() && !(api.phoneActive && api.phoneActive()));
   const cur = () => { const t = api.track(S.selected); return t && t.kind === 'midi' ? t : null; };
   const midiTracks = () => S.project.tracks.filter((t) => t.kind === 'midi');
   const pat = (t) => (t && t.seq ? t.seq.patterns[t.seq.active] : null);
@@ -144,7 +154,7 @@ export function createSeqView(api) {
   function capture(trackId, fx, key, v) {
     if (!ui.plock || !S.project) return false;
     const t = cur(); if (!t || t.id !== trackId || !t.seq || !ui.sel.length) return false;
-    if (!(S.view === 'seq' || onPhone())) return false;
+    if (!(panelVisible() || onPhone())) return false;
     const entry = api.paramCatalog(t).find((e) => String(e.fx) === String(fx) && e.key === String(key)); if (!entry) return false;
     if (addPlock(t, entry, v)) { refreshGrid(); renderInspector(); }
     return true;
@@ -208,26 +218,58 @@ export function createSeqView(api) {
   }
 
   // ---------------------------------------------------------------- rendering
-  function mount(el) { host = el; phoneMode = false; rerender(); }
-  const onPhone = () => !!(api.phoneActive && api.phoneActive() && api.phoneTab() === 'seq');
+  // ---- docked panel chrome: header (track, collapse), resize handle on the left edge, scrolling body
+  function mount(el) {
+    host = el; phoneMode = false;
+    let wasSmall = smallWin();
+    addEventListener('resize', () => { const sm = smallWin(); if (sm !== wasSmall) { wasSmall = sm; narrowOpen = false; applyWidth(); rerender(); if (api.onLayout) api.onLayout(); } });
+    const grip = h('div', { class: 'sqp-grip', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize the sequencer panel', title: 'Drag to resize the sequencer panel (double-click: default width)', tabindex: 0 });
+    let drag = null;
+    grip.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, w: panelW() }; grip.setPointerCapture(e.pointerId); e.preventDefault(); });
+    grip.addEventListener('pointermove', (e) => { if (!drag) return; prefs.seqW = Math.round(Math.max(PMIN, Math.min(PMAX, drag.w + drag.x - e.clientX))); applyWidth(); });
+    const endDrag = () => { if (!drag) return; drag = null; savePrefs(); rerender(); if (api.onLayout) api.onLayout(); };
+    grip.addEventListener('pointerup', endDrag); grip.addEventListener('pointercancel', endDrag);
+    grip.addEventListener('dblclick', () => { prefs.seqW = PDEF; savePrefs(); applyWidth(); rerender(); if (api.onLayout) api.onLayout(); });
+    grip.addEventListener('keydown', (e) => { if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return; e.preventDefault(); prefs.seqW = Math.max(PMIN, Math.min(PMAX, panelW() + (e.key === 'ArrowLeft' ? 20 : -20))); savePrefs(); applyWidth(); rerender(); });
+    body = h('div', { class: 'sqp-body' });
+    host.replaceChildren(grip, h('div', { class: 'sqp-head' }), body);
+    applyWidth(); rerender();
+  }
+  function applyWidth() { if (!host) return; host.style.setProperty('--seqw', panelW() + 'px'); host.classList.toggle('open', panelOpen()); host.classList.toggle('closed', !panelOpen()); host.classList.toggle('wide', !narrow()); host.classList.toggle('overlay', smallWin()); }
+  function setOpen(on) { if (smallWin()) narrowOpen = !!on; else { prefs.seqOpen = !!on; savePrefs(); } applyWidth(); rerender(); haptic(8); if (api.onLayout) api.onLayout(); }
+  function header() {
+    const t = api.track(S.selected);
+    const tog = h('button', { class: 'sqp-tog', 'aria-label': panelOpen() ? 'Collapse the sequencer panel' : 'Open the sequencer panel', 'aria-expanded': String(panelOpen()), title: panelOpen() ? 'Collapse the sequencer panel' : 'Open the step sequencer', onclick: () => setOpen(!panelOpen()) }, icon(panelOpen() ? 'chevRight' : 'seq'));
+    if (!panelOpen()) return [tog, h('button', { class: 'sqp-vlabel', onclick: () => setOpen(true), title: 'Open the step sequencer' }, 'Sequencer')];
+    return [h('span', { class: 'sqp-title' }, icon('seq'), 'Sequencer'), t ? h('span', { class: 'sqp-track', style: { '--c': t.color } }, h('i', {}), t.name) : h('span', { class: 'sqp-track dim' }, 'No track selected'), tog];
+  }
+  const onPhone = () => !!(api.phoneActive && api.phoneActive() && api.phoneSeqOpen && api.phoneSeqOpen());
   function rerender() {
     if (!S.project) return;
     const ct = cur(); document.body.classList.toggle('sq-plock', !!(ui.plock && ct && ct.seq));
     if (onPhone()) { api.phoneRender(); return; }
-    if (!host || S.view !== 'seq') return;
-    host.replaceChildren(...build(false));
+    if (!host || (api.phoneActive && api.phoneActive())) return;
+    applyWidth(); $('.sqp-head', host).replaceChildren(...header());
+    phoneMode = false;
+    if (!panelOpen()) { body.replaceChildren(); return; }
+    const keep = body.scrollTop;
+    // quick "new sequence" buttons at the bottom of the panel (a new MIDI track with a sequencer, selected)
+    const tadd = cur() ? h('div', { class: 'sq-tadd', role: 'group', 'aria-label': 'New sequence track' },
+      h('button', { class: 'small', title: 'New synth track with a step sequencer', onclick: () => newSeqTrack('synth') }, '+ Synth'),
+      h('button', { class: 'small', title: 'New drum track with a step sequencer', onclick: () => newSeqTrack('drums') }, '+ Drums')) : null;
+    body.replaceChildren(...build(false), ...(tadd ? [tadd] : [])); body.scrollTop = keep;
   }
   const refresh = () => rerender();
   function refreshGrid() { const g = $('.sq-gridwrap', root()); const t = cur(); if (!g || !t || !t.seq) return; g.replaceWith(gridBlock(t)); }
-  const root = () => (onPhone() ? $('#phone') : host) || document;
+  const root = () => (onPhone() ? $('#phone .ph-side') || $('#phone') : host) || document;
   function renderInspector() { const el = $('.sq-insp', root()), t = cur(); if (el && t && t.seq) el.replaceWith(inspector(t)); }
 
   function build(phone) {
     phoneMode = phone;
     const t = cur();
-    const strip = phone ? null : trackStrip();
-    if (!t) return [h('div', { class: 'sq-wrap' }, strip, h('div', { class: 'sq-empty' }, h('p', {}, 'Pick a MIDI track, or make a new one for the sequencer.'),
-      h('div', { class: 'sq-row' }, h('button', { class: 'sq-big', onclick: () => newSeqTrack('synth') }, icon('synth'), 'New synth sequence'), h('button', { class: 'sq-big', onclick: () => newSeqTrack('drums') }, icon('drums'), 'New drum sequence'))))];
+    const strip = null;
+    if (!t) return [h('div', { class: 'sq-wrap' }, strip, h('div', { class: 'sq-empty' }, h('p', {}, 'Select an instrument (MIDI) track, or make a new one for the sequencer.'),
+      h('div', { class: 'sq-row' }, h('button', { class: 'sq-big', 'data-act': 'new-synth', onclick: () => newSeqTrack('synth') }, icon('synth'), 'New synth sequence'), h('button', { class: 'sq-big', 'data-act': 'new-drums', onclick: () => newSeqTrack('drums') }, icon('drums'), 'New drum sequence'))))];
     if (!t.seq) return [h('div', { class: 'sq-wrap' }, strip, h('div', { class: 'sq-empty' },
       h('p', {}, `"${t.name}" has no sequencer yet. A step sequencer plays patterns on this track: tap steps to turn notes on, then press Play.`),
       h('button', { class: 'sq-big accent', 'data-act': 'enable', onclick: () => enable(t) }, icon('seq'), 'Add step sequencer')))];
@@ -235,21 +277,7 @@ export function createSeqView(api) {
     shown = { tid: t.id, page: ui.page, pi: t.seq.active };
     const main = h('div', { class: 'sq-main' + (phone ? ' phone' : '') },
       toolbar(t, phone), slots(t, phone), h('div', { class: 'sq-body' }, h('div', { class: 'sq-left' }, gridBlock(t), keys(t, phone)), inspector(t)));
-    return [h('div', { class: 'sq-wrap' + (phone ? ' phone' : '') }, strip, main)];
-  }
-  function trackStrip() {
-    const list = midiTracks();
-    return h('div', { class: 'sq-tracks', role: 'listbox', 'aria-label': 'Sequencer tracks' },
-      h('div', { class: 'sq-th' }, 'Tracks'),
-      ...list.map((t) => {
-        const p = pat(t), on = t.seq && t.seq.on;
-        return h('div', { class: 'sq-tr' + (t.id === S.selected ? ' sel' : '') + (on ? ' live' : ''), role: 'option', 'aria-selected': String(t.id === S.selected), 'data-tid': t.id, onclick: () => { api.select(t.id); ui.sel = []; ui.page = 0; api.renderAll(); } },
-          h('i', { class: 'sq-tc', style: { background: t.color } }),
-          h('span', { class: 'sq-tn' }, t.name),
-          t.seq ? h('span', { class: 'sq-tinfo', title: 'Pattern, length and step rate' }, `${t.seq.song ? 'Song' : slotName(t.seq.active)} ${p ? p.len + ' @ ' + p.rate : ''}`) : h('span', { class: 'sq-tinfo dim' }, 'no seq'),
-          h('span', { class: 'sq-tbar' }, h('i', { 'data-seqbar': t.id })));
-      }),
-      h('div', { class: 'sq-tadd' }, h('button', { title: 'New MIDI track with a synth and a sequencer', onclick: () => newSeqTrack('synth') }, icon('plus'), 'Synth'), h('button', { title: 'New MIDI track with the drum kit and a sequencer', onclick: () => newSeqTrack('drums') }, icon('plus'), 'Drums')));
+    return [h('div', { class: 'sq-wrap' + (phone ? ' phone' : ' panel') }, main)];
   }
   function toolbar(t, phone) {
     const seq = t.seq, p = pat(t);
@@ -346,7 +374,7 @@ export function createSeqView(api) {
           ...Array.from({ length: end - start }, (_, k) => { const si = start + k, s = p.steps[si], on = s.on && s.n.includes(n);
             return h('button', { class: 'sq-dcell' + (on ? ' on' : '') + (si % 4 === 0 ? ' beat' : '') + (ui.sel.includes(si) ? ' sel' : '') + (s.pl && on ? ' pl' : ''), 'data-si': si, 'data-n': n, 'aria-pressed': String(on), 'aria-label': `${name} step ${si + 1}`, style: on ? { '--v': (s.v / 127).toFixed(2) } : {}, onclick: () => toggleStep(t, si, n) }); }))));
     } else {
-      grid = h('div', { class: 'sq-grid', style: { '--cols': String(phoneMode ? 8 : PS()) } }, ...Array.from({ length: end - start }, (_, k) => stepCell(t, p, start + k)));
+      grid = h('div', { class: 'sq-grid', style: { '--cols': String(cols()) } }, ...Array.from({ length: end - start }, (_, k) => stepCell(t, p, start + k)));
       let lp = null, moved = false;
       grid.addEventListener('pointerdown', (e) => {
         const b = e.target.closest('.sq-step'); if (!b) return; const si = +b.dataset.si; moved = false;
@@ -369,14 +397,14 @@ export function createSeqView(api) {
     const tabs = h('div', { class: 'sq-lanetabs', role: 'tablist', 'aria-label': 'Step value lane' }, ...LANES.map((x) => h('button', { class: 'sq-lt' + (x.key === f.key ? ' on' : ''), role: 'tab', 'aria-selected': String(x.key === f.key), title: x.help, onclick: () => { ui.lane = x.key; refresh(); } }, phoneMode ? x.short : x.label)));
     const norm = (v) => (v - f.min) / (f.max - f.min);
     const barStyle = (v) => (f.key === 'nudge' ? { bottom: Math.min(50, norm(v) * 100) + '%', height: Math.abs(norm(v) - 0.5) * 100 + '%' } : { height: Math.max(3, norm(v) * 100) + '%' });
-    const bars = h('div', { class: 'sq-lane' + (f.key === 'nudge' ? ' bi' : ''), style: { '--cols': String(isDrum(t) ? end - start : phoneMode ? 8 : PS()) }, title: f.help + ' Drag across the bars to draw.' },
+    const bars = h('div', { class: 'sq-lane' + (f.key === 'nudge' ? ' bi' : ''), style: { '--cols': String(isDrum(t) ? end - start : cols()) }, title: f.help + ' Drag across the bars to draw.' },
       ...Array.from({ length: end - start }, (_, k) => { const si = start + k, s = p.steps[si], v = s[f.key];
         return h('div', { class: 'sq-bar' + (s.on ? ' on' : ''), 'data-si': si, title: `Step ${si + 1}: ${fmtField(f, v)}` }, h('i', { style: barStyle(v) }), h('span', {}, fmtField(f, v))); }));
     let drag = null;
     const apply = (e) => {
-      const r = bars.getBoundingClientRect(), n = end - start, cols = isDrum(t) ? n : phoneMode ? 8 : PS(), rows = Math.ceil(n / cols), rowH = r.height / rows;
-      const col = Math.floor((e.clientX - r.left) / (r.width / cols)), row = Math.max(0, Math.min(rows - 1, Math.floor((e.clientY - r.top) / rowH)));
-      const k = row * cols + col; if (col < 0 || col >= cols || k < 0 || k >= n) return;
+      const r = bars.getBoundingClientRect(), n = end - start, nc = isDrum(t) ? n : cols(), rows = Math.ceil(n / nc), rowH = r.height / rows;
+      const col = Math.floor((e.clientX - r.left) / (r.width / nc)), row = Math.max(0, Math.min(rows - 1, Math.floor((e.clientY - r.top) / rowH)));
+      const k = row * nc + col; if (col < 0 || col >= nc || k < 0 || k >= n) return;
       const y = 1 - Math.max(0, Math.min(1, (e.clientY - r.top - row * rowH) / rowH));
       const si = start + k, v = f.min + y * (f.max - f.min);
       edit('Draw ' + f.label.toLowerCase(), () => SQ.setField(p.steps[si], f.key, v), drag);
@@ -443,7 +471,7 @@ export function createSeqView(api) {
   let lastSi = new Map();
   function frame() {
     if (!S.project) return;
-    const visible = onPhone() || (S.view === 'seq' && host && !host.hidden && !(api.phoneActive && api.phoneActive()));
+    const visible = onPhone() || panelVisible();
     if (!visible) return;
     const r = root();
     for (const t of midiTracks()) {
@@ -467,5 +495,5 @@ export function createSeqView(api) {
     }
   }
   function phoneScreen() { phoneMode = true; return build(true); }
-  return { mount, render: rerender, frame, onNote, capture, target, phoneScreen, enable, ui, leavePhone: () => { phoneMode = false; }, get phoneMode() { return phoneMode; } };
+  return { mount, render: rerender, frame, onNote, capture, target, phoneScreen, enable, newSeqTrack, setOpen, ui, leavePhone: () => { phoneMode = false; }, get phoneMode() { return phoneMode; }, get open() { return panelOpen(); }, get width() { return panelW(); } };
 }

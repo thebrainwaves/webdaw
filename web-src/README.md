@@ -1,4 +1,4 @@
-# Auduio (v0.5.0)
+# Auduio (v0.5.1)
 
 Auduio was called WebDAW until v0.3.1. Saved projects and settings carry over automatically, and old `.webdaw.zip` files still import; new exports are `.auduio.zip`.
 
@@ -21,11 +21,6 @@ node tests/e2e-rename.mjs      # v0.3.1 rename to Auduio: visible name, .auduio.
 node tests/randomize-unit.mjs  # v0.4 randomizer logic (musical/chaos, locks, safe levels), Node only
 node tests/e2e-v04.mjs         # v0.4 browser sidebar, MIDI effects, randomizer on every device (screenshots -> shots/)
 node tests/e2e-plugins.mjs     # v0.4 plugin hosting: this UI driving the real native engine + Surge XT (skips if not built)
-node tests/seq-unit.mjs        # v0.5 step sequencer logic (Node only); also clipedit-unit.mjs, drumrack-unit.mjs
-node tests/e2e-seq.mjs         # v0.5 step sequencer + clip cutting in a real browser
-node tests/e2e-drumrack.mjs    # v0.5 128-pad drum rack with user samples
-node tests/e2e-manual.mjs      # v0.5 user manual (PDF) and the Help link
-node tests/e2e-midiout.mjs     # v0.5 MIDI out through the native engine (desktop webviews without Web MIDI)
 ```
 The mic needs HTTPS or localhost. GitHub Pages serves over HTTPS.
 
@@ -42,7 +37,7 @@ Publish the contents of `dist/`. Every path is relative, so the app works from a
 - `src/js/project.js`: project model, IndexedDB, WAV encode/decode, ZIP export/import
 - `src/js/ui/controls.js`: knobs and faders (pointer events, touch-friendly)
 - `src/js/main.js`: UI (session grid, arrangement, device panel, menus, dialogs, groups, racks, tiers)
-- `src/js/audio/synths.js`: polyphonic Analog Synth (3 osc + sub, drift, ladder-style LPF with drive, glide) and Wavetable Synth (code-generated tables, morph, unison)
+- `src/js/audio/synths.js`: polyphonic Analog Synth (3 osc + sub, drift, ladder LPF with drive, glide) and Wavetable Synth (code-generated tables, morph, unison)
 - `src/js/audio/instruments.js`: drum sampler plus the instrument registry
 - `src/js/audio/pitchdsp.js`, `timecorrect.js`: YIN pitch detection and correction, transient quantize
 - `src/js/audio/keydetect.js`, `keyfollow.js`: key detection and live "follow the band"
@@ -54,13 +49,6 @@ Publish the contents of `dist/`. Every path is relative, so the app works from a
 - `src/js/ui/tutorial.js`: interactive first-run tutorial
 - `src/js/midi.js`, `ui/pianoroll.js`, `history.js`, `security.js`, `validate.js`: Web MIDI, piano roll, undo/redo, PIN/encryption, import validation
 
-## What's new in v0.5
-- **Step sequencer** ("Seq" view): up to 128 steps per pattern, ratchets, chance, parameter locks, polyrhythms and polymeters, pattern chains, randomize with locks, and MIDI out to external gear.
-- **128-pad Drum Kit** with your own samples.
-- **Clip cutting** in the arrangement (split at the playhead, cut tool).
-- **User manual** (27-page PDF, `docs/Auduio-Manual.pdf`), opened from Help > User manual.
-- **Desktop app:** the Windows and Linux builds use the new JUCE-free Rust audio engine (VST3 + CLAP). macOS keeps the JUCE engine (VST3 + AU). On macOS and Linux, where the app's webview has no Web MIDI, MIDI out goes through the engine.
-
 ## What's new in v0.4
 - **Browser sidebar** (desktop layouts; press B or the arrow to collapse it to an icon rail). It lists Instruments, MIDI Effects, Audio Effects, Racks and Plugins, with search. Drag an item onto a track, double-click it, or use its + button. Items dropped on empty space create a fitting new track.
 - **MIDI effects** in front of the instrument on MIDI tracks: Arpeggiator (synced to the transport, also works while stopped), Chord, Scale (follows the song key), Note Length, Velocity and Random.
@@ -70,7 +58,7 @@ Publish the contents of `dist/`. Every path is relative, so the app works from a
   - "Randomize chain" and "Randomize track". Every randomize is one undo step.
   - Musical mode keeps output levels where they are, keeps feedback, resonance and drive in a safe range, uses musical intervals for transpose, and balances EQ boosts.
 - **Plugins (desktop app only):**
-  - Loads VST3 plugins (AU on macOS) through a native audio engine sidecar, and scans plugin folders in separate processes.
+  - Loads VST3 and CLAP plugins (no Audio Units) through a native audio engine sidecar, and scans plugin folders in separate processes.
   - The plugin's own window opens from its device card. The card also has a parameter list with search, randomize, macros, MIDI learn and automation recording.
   - The web app, Android and iOS show the Plugins section as desktop-only.
   - See `../daw-apps/docs/PLUGIN-HOSTING.md` (apps branch: `apps/docs/PLUGIN-HOSTING.md`).
@@ -80,7 +68,7 @@ Publish the contents of `dist/`. Every path is relative, so the app works from a
 - A recording machine, not a toy: all emoji are gone. The UI uses monochrome SVG line icons (`src/js/ui/icons.js`) or plain text, with flatter surfaces, tighter type and tabular numbers. The purple/red accents and phone-mode touch sizes are unchanged.
 - Click to hear: pressing an audio clip in the Arrangement or an audio slot in Session auditions it right away through the track's effects, with no launch quantize. Hold it to preview until you let go, or tap it once to latch and tap again to stop. Session slots have a separate play button for a quantized launch. In clip detail, use the Preview button or tap the waveform to play from that point. Esc stops a preview.
 - Auto-monitor (Preferences): hear the selected armed track's input. Use headphones.
-- Loop bar, Ableton-style: the loop brace sits on the Arrangement ruler.
+- Loop bar: the loop brace sits on the Arrangement ruler.
   - Drag along the ruler to set a loop. Drag the bar to move it, or drag its edges to resize. It snaps to beats (bars when zoomed out); hold Alt to place it freely.
   - Double-click the brace, or use the Loop button in the transport, to switch the loop on or off. Ctrl/Cmd+L loops the selected clip, or the 4 bars at the playhead.
   - Playback wraps seamlessly: every pass is scheduled sample-accurately ahead of time and the metronome keeps an even beat.
@@ -95,7 +83,7 @@ Publish the contents of `dist/`. Every path is relative, so the app works from a
 - **Phone mode:** turns on automatically on small/touch screens (Preferences or ☰ to change). One screen at a time with a bottom tab bar, 48px+ targets, plain-language labels (“Make it louder” — Compressor), a big record button, a large waveform, swipe between tracks.
 - **Tutorial:** 6 interactive one-sentence steps on phones (4 on desktop) that highlight the real control. Skippable; replay from Help mode, ☰ → Tutorial, Preferences or phone More.
 - **Theme:** purple primary (#8B5CF6) and red for record/arm (#EF4444). Knob arcs use a purple→red gradient; no yellow/orange left.
-- **Waveforms:** Ableton-style clip waveforms in the clip colour, drawn from cached peak mipmaps (stays sharp at any zoom; raw samples when zoomed far in), L/R lanes on tall tracks (↕). A clip detail view (bottom panel) shows a zoomable waveform with draggable start/end or loop markers, gain, transpose/detune (repitch), a transient overlay (the hits Quantize moves) and the beat grid. A live waveform scrolls in while recording. A master oscilloscope sits in the header.
+- **Waveforms:** Clip waveforms in the clip colour, drawn from cached peak mipmaps (stays sharp at any zoom; raw samples when zoomed far in), L/R lanes on tall tracks (↕). A clip detail view (bottom panel) shows a zoomable waveform with draggable start/end or loop markers, gain, transpose/detune (repitch), a transient overlay (the hits Quantize moves) and the beat grid. A live waveform scrolls in while recording. A master oscilloscope sits in the header.
 - **Free clip placement:** drop audio files on any track/time/slot (empty space = new track). Drag clips between tracks, and between Arrangement and Session by hovering the view tab. Snap toggle (beat grid; Alt/Shift bypasses). Overlapped clips underneath are trimmed, split or removed. On touch screens, long-press a clip and drag, or use “Pick up / move…” then “Place here”. All undoable.
 
 ## What's new in v0.2

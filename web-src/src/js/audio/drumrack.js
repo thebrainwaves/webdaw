@@ -6,7 +6,7 @@ export const PAD_COUNT = 128;
 export const PAD_LIMITS = { maxFileBytes: 50 * 1024 * 1024, maxSeconds: 30, maxFiles: 128, nameLen: 40, chokeGroups: 8 };
 export const SAMPLE_EXT = ['wav', 'wave', 'aif', 'aiff', 'aifc', 'mp3', 'flac', 'ogg', 'oga'];
 export const SAMPLE_ACCEPT = '.wav,.wave,.aif,.aiff,.aifc,.mp3,.flac,.ogg,.oga,audio/wav,audio/x-wav,audio/aiff,audio/x-aiff,audio/mpeg,audio/flac,audio/ogg';
-export const DEFAULT_VIEW = 36; // like Ableton: the 4x4 view starts at the kick (note 36)
+export const DEFAULT_VIEW = 36; // the 4x4 view starts at the kick (note 36, General MIDI)
 const NN = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 export const noteLabel = (n) => NN[n % 12] + (Math.floor(n / 12) - 1); // same naming as the rest of Auduio: 60 = C4, 36 = C2
 const GM = { 35: 'Kick 2', 36: 'Kick', 37: 'Rim', 38: 'Snare', 39: 'Clap', 40: 'Snare 2', 41: 'Tom L', 42: 'Hat', 43: 'Tom L2', 44: 'Pedal Hat', 45: 'Tom M', 46: 'Open Hat', 47: 'Tom M2', 48: 'Tom H', 49: 'Crash', 50: 'Tom H2', 51: 'Ride', 52: 'China', 53: 'Ride Bell', 54: 'Tamb', 55: 'Splash', 56: 'Cowbell', 57: 'Crash 2', 59: 'Ride 2' };
@@ -14,7 +14,7 @@ export function padName(n, pads) { const p = pads && pads[n]; return (p && p.nam
 
 // the 4x4 view scrolls in whole rows of 4; its lowest note is a multiple of 4 in 0..112
 export const clampView = (lo) => Math.max(0, Math.min(PAD_COUNT - 16, Math.round((+lo || 0) / 4) * 4));
-// overview strip: 4 wide x 32 tall, lowest notes at the bottom (like Ableton). cell -> note and back
+// overview strip: 4 wide x 32 tall, lowest notes at the bottom. cell -> note and back
 export const overviewNote = (col, rowFromTop) => (31 - rowFromTop) * 4 + col;
 export const viewFromOverviewRow = (rowFromTop) => clampView((31 - rowFromTop) * 4 - 6); // centre the 4-row window on the clicked row
 // 4x4 grid cell (row 0 = top) -> note, bottom-left is the lowest note

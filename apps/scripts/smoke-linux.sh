@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Headless smoke test of the Linux desktop build: launches the AppImage (or a binary) on a
+# Headless smoke test of the Linux desktop build: launches the built binary on a
 # virtual X display, captures the web app's console, takes screenshots, clicks Start.
-# Usage: scripts/smoke-linux.sh [path/to/Auduio.AppImage|binary] [outdir]
+# Usage: scripts/smoke-linux.sh [path/to/binary] [outdir]
 set -u
-APP=${1:-src-tauri/target/release/bundle/appimage/Auduio_0.3.1_amd64.AppImage}
+APP=${1:-src-tauri/target/release/auduio}
 OUT=${2:-screenshots}
 mkdir -p "$OUT"
 export DISPLAY=:97
 Xvfb :97 -screen 0 1440x900x24 >/dev/null 2>&1 & XV=$!
 sleep 1
-AUDUIO_CONSOLE=1 APPIMAGE_EXTRACT_AND_RUN=1 "$APP" > "$OUT/console.log" 2>&1 & AP=$!
-# wait (up to 60 s) for the window; AppImage extraction takes a while
+AUDUIO_CONSOLE=1 "$APP" > "$OUT/console.log" 2>&1 & AP=$!
+# wait (up to 60 s) for the window
 WID=""
 for i in $(seq 60); do WID=$(xdotool search --onlyvisible --name '^Auduio$' 2>/dev/null | tail -1); [ -n "$WID" ] && break; sleep 1; done
 echo "window after ${i}s"

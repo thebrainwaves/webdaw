@@ -88,10 +88,34 @@ await step('help mode', async () => { await pg.click('#btnHelp'); await sleep(10
 await step('easy', async () => { await pg.click('#btnEasy'); await sleep(300); await snap(pg, 'easy-mode'); await pg.click('#btnEasy'); });
 await step('menu', async () => { await pg.click('#btnMenu'); await sleep(200); await snap(pg, 'menu', { clip: { x: 1040, y: 0, width: 400, height: 640 } }); await pg.click('#btnMenu'); });
 await step('seq', async () => {
-  await E(pg, () => { __daw.S.selected = __daw.S.project.tracks[3].id; }); await view(pg, 'seq'); await sleep(200);
-  await E(pg, () => document.querySelector('[data-act=enable]').click()); await sleep(200);
-  for (const [si, n] of [[0, 36], [4, 38], [8, 36], [10, 36], [12, 38], [2, 42], [6, 42], [10, 42], [14, 42], [15, 46]]) await pg.click(`.sq-dcell[data-si="${si}"][data-n="${n}"]`);
+  await view(pg, 'session'); await E(pg, () => { __daw.S.selected = __daw.S.project.tracks[3].id; __daw.seq.setOpen(true); __daw.seq.render(); }); await sleep(200);
+  await E(pg, () => document.querySelector('#seqPanel [data-act=enable]').click()); await sleep(200);
+  for (const [si, n] of [[0, 36], [4, 38], [8, 36], [10, 36], [12, 38], [2, 42], [6, 42], [10, 42], [14, 42], [15, 46]]) await pg.click(`#seqPanel .sq-dcell[data-si="${si}"][data-n="${n}"]`);
   await E(pg, () => __daw.engine.play(0)); await sleep(900); await snap(pg, 'seq-drums'); await E(pg, () => { __daw.engine.stop(); __daw.engine.stop(); });
+});
+await step('seq synth', async () => {
+  await E(pg, () => { __daw.S.selected = __daw.S.project.tracks[2].id; __daw.seq.render(); }); await sleep(200);
+  await E(pg, () => { const b = document.querySelector('#seqPanel [data-act=enable]'); if (b) b.click(); }); await sleep(200);
+  await E(pg, () => { const t = __daw.S.project.tracks[2]; const p = t.seq.patterns[t.seq.active]; [[0, 60], [3, 63], [6, 67], [8, 60], [11, 70], [14, 67]].forEach(([i, n]) => { p.steps[i].on = true; p.steps[i].notes = [n]; }); p.steps[6].rat = 3; p.steps[11].pl = { 'inst|cutoff': 900 }; __daw.seq.render(); });
+  await sleep(150); await pg.click('#seqPanel .sq-step[data-si="6"] .sq-num'); await sleep(200);
+  await snap(pg, 'seq-synth');
+  await E(pg, () => { const b = [...document.querySelectorAll('#seqPanel button')].find((x) => x.textContent.trim() === 'P-Lock'); if (b) b.click(); }); await sleep(250);
+  await snap(pg, 'seq-plock');
+  await E(pg, () => { const b = [...document.querySelectorAll('#seqPanel button')].find((x) => x.textContent.trim() === 'P-Lock'); if (b) b.click(); });
+});
+await step('keys', async () => {
+  await E(pg, () => { document.activeElement && document.activeElement.blur(); __daw.compKeys.setOn(true); }); await sleep(200);
+  await pg.keyboard.down('d'); await pg.keyboard.down('g'); await sleep(150); await snap(pg, 'keys'); await pg.keyboard.up('d'); await pg.keyboard.up('g');
+  await E(pg, () => __daw.compKeys.setOn(false));
+});
+await step('micro edit', async () => {
+  await view(pg, 'arrange'); await sleep(300);
+  await E(pg, () => { const c = __daw.S.project.tracks[1].arrangement.find((x) => x.id === 'g1'); c.fadeIn = 0.35; c.fadeOut = 1.2; });
+  await view(pg, 'session'); await view(pg, 'arrange'); await sleep(300);
+  const b = await E(pg, () => { const r = document.querySelector('.aclip[data-clip="g1"]').getBoundingClientRect(); return { x: r.left + 200, y: r.top + r.height / 2 }; });
+  await pg.mouse.click(b.x, b.y); await sleep(200); await E(pg, () => __daw.engine.stopAudition());
+  for (let i = 0; i < 16; i++) await E(pg, () => document.querySelector('#devHead button[title^="Zoom in"]')?.click());
+  await sleep(250); await snap(pg, 'micro-edit');
 });
 await pg.context().close();
 
@@ -100,6 +124,15 @@ const ph = await page({ width: 390, height: 844 }, { guideDone: true, tutorialDo
 await E(ph, DEMO);
 for (const tab of ['record', 'tracks', 'mix', 'effects', 'more']) await step('phone ' + tab, async () => { await E(ph, (t) => document.querySelector(`.ph-tab[data-tab=${t}]`).click(), tab); await sleep(400); await snap(ph, 'phone-' + tab); });
 await step('phone clip sheet', async () => { await E(ph, () => { __daw.engine.setPosition(3); document.querySelector('.ph-tab[data-tab=tracks]').click(); }); await sleep(200); await E(ph, () => document.querySelector('.ph-clip').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))); await sleep(300); await snap(ph, 'phone-split'); });
+await step('phone steps', async () => {
+  await E(ph, () => { const { S } = __daw; __daw.phone.openSeq(false); document.querySelector('.ph-tab[data-tab=tracks]').click(); });
+  await E(ph, () => { const t = __daw.S.project.tracks.find((x) => x.kind === 'midi'); if (t) __daw.S.selected = t.id; }); await sleep(100);
+  await E(ph, () => document.querySelector('#phone .ph-steps').click()); await sleep(300);
+  await E(ph, () => { const b = [...document.querySelectorAll('#phone .ph-side button')].find((x) => /instrument track|Add step sequencer/i.test(x.textContent)); if (b) b.click(); }); await sleep(300);
+  await E(ph, () => { const b = [...document.querySelectorAll('#phone .ph-side button')].find((x) => /Add step sequencer/i.test(x.textContent)); if (b) b.click(); }); await sleep(300);
+  for (const i of [0, 3, 6, 8, 12]) await E(ph, (i) => document.querySelector(`#phone .ph-side .sq-step[data-si="${i}"]`)?.click(), i);
+  await sleep(200); await snap(ph, 'phone-steps'); await E(ph, () => __daw.phone.openSeq(false)); await sleep(200);
+});
 await ph.context().close();
 await browser.close(); server.kill();
 console.log('shots:', done.join(', '));

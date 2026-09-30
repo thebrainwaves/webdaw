@@ -1,4 +1,4 @@
-// Auduio step sequencer (inspired by the Squarp Pyramid / Hapax workflow).
+// Auduio step sequencer.
 // Every MIDI track can carry `t.seq`: up to 16 pattern slots (A-P), each with its own length (1-128 steps)
 // and step rate, so tracks run polymetric / polyrhythmic against each other. Steps hold notes, velocity,
 // length, gate, probability, ratchets, micro-timing and parameter locks (p-locks) for any device parameter.
@@ -130,7 +130,7 @@ export function planSteps(seq, b0, b1, st = {}) {
   } else emitRange(out, seq, seq.active, anchor, b0, b1);
   return out;
 }
-// where a pattern switch lands: the end of the current pattern cycle (Hapax/Pyramid style)
+// where a pattern switch lands: the end of the current pattern cycle 
 export function nextCycle(seq, b, anchor = 0) {
   const p = seq.patterns[seq.active]; if (!p) return b;
   const L = p.len * stepBeats(p), k = Math.ceil((b - anchor) / L - 1e-9);

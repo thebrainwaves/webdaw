@@ -1,3 +1,9 @@
 node_modules/
 tests/exported-test.webdaw.zip
 tests/last-results-*.json
+dist/
+shots/
+screenshots/
+last-results*.json
+tests/exported-test.*
+tests/evil.webdaw.zip

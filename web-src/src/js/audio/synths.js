@@ -79,7 +79,7 @@ function adsr(param, t, base, peak, a, d, s) {
 }
 function releaseParam(param, t, to, r) { param.cancelScheduledValues(t); if (param.cancelAndHoldAtTime) { try { param.cancelAndHoldAtTime(t); } catch (e) {} } param.setTargetAtTime(to, t, r / 4 + 0.001); }
 
-// ------------------------------------------------------------------ analog-style synth
+// ------------------------------------------------------------------ analog synth
 const driveCurves = new Map();
 function driveCurve(drive) {
   const k = Math.round(drive); if (driveCurves.has(k)) return driveCurves.get(k);
@@ -101,7 +101,7 @@ export class AnalogSynth extends VoiceSynth {
       { key: 'o3semi', label: 'O3 semi', min: -24, max: 24, def: 12, unit: 'st', step: 1 },
       { key: 'sub', label: 'Sub', min: 0, max: 100, def: 25, unit: '%', help: 'Square sub-oscillator one octave down.' },
       { key: 'drift', label: 'Drift', min: 0, max: 100, def: 25, unit: '%', help: 'Subtle random pitch drift like old analog oscillators.' },
-      { key: 'cutoff', label: 'Cutoff', min: 60, max: 16000, def: 1800, unit: 'Hz', curve: 'log', easy: true, help: 'Ladder-style 24 dB low-pass cutoff.' },
+      { key: 'cutoff', label: 'Cutoff', min: 60, max: 16000, def: 1800, unit: 'Hz', curve: 'log', easy: true, help: '24 dB ladder low-pass cutoff.' },
       { key: 'reso', label: 'Reso', min: 0, max: 100, def: 25, unit: '%', easy: true, help: 'Filter resonance.' },
       { key: 'drive', label: 'Drive', min: 0, max: 100, def: 15, unit: '%', help: 'Saturation into the filter.' },
       { key: 'envAmt', label: 'F.Env', min: 0, max: 100, def: 45, unit: '%', help: 'Filter envelope amount.' },

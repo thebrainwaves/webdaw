@@ -1,5 +1,5 @@
-//! auduio-engine (JUCE-free): hosts VST3 and CLAP plugins for the Auduio desktop app and talks to it over
-//! stdin/stdout with newline-delimited JSON (same protocol as the JUCE engine).
+//! auduio-engine: hosts VST3 and CLAP plugins for the Auduio desktop app and talks to it over
+//! stdin/stdout with newline-delimited JSON (protocol 1, compatible with projects saved by earlier Auduio versions).
 //!   auduio-engine                      protocol server on stdin/stdout (spawned by the Auduio desktop app)
 //!   auduio-engine --scan-one F P OUT   probe one plugin file in isolation (spawned by the scanner)
 //!   auduio-engine --version
@@ -8,6 +8,7 @@ mod protocol;
 mod audio;
 mod claphost;
 mod engine;
+mod midiin;
 mod midiout;
 mod plugin;
 mod rtcheck;
@@ -27,7 +28,7 @@ enum Input { Line(String), Eof }
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let _ = plugin::MAIN_THREAD.set(std::thread::current().id());
-    if args.iter().any(|a| a == "--version") { println!("auduio-engine {} (auduio-rs, JUCE-free: VST3 + CLAP)", engine::VERSION); return; }
+    if args.iter().any(|a| a == "--version") { println!("auduio-engine {} (auduio-rs: VST3 + CLAP)", engine::VERSION); return; }
     if let Some(k) = args.iter().position(|a| a == "--scan-one") {
         let code = if args.len() >= k + 4 { scanner::scan_one_main(&args[k + 1], &args[k + 2], &args[k + 3]) } else { 4 };
         std::process::exit(code);

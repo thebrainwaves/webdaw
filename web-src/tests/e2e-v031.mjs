@@ -132,10 +132,11 @@ try {
   await P.evaluate(MK);
   await P.evaluate(() => { const { S, engine } = __daw; __mkBuf('bp', 3); S.project.tracks[0].arrangement.push({ id: 'cp', bufferId: 'bp', start: 0, offset: 0, duration: 3, name: 'Take 1' }); S.project.tracks[0].fx.push({ type: 'compressor', enabled: true, values: {} }); engine.setTrackFx(S.project.tracks[0]); __daw.phone.render(); });
   const ph = {};
-  for (const tab of ['record', 'tracks', 'seq', 'mix', 'effects', 'more']) { await P.tap(`.ph-tab[data-tab=${tab}]`); await sleep(250); ph[tab] = await P.evaluate(SCAN); if (tab !== 'seq') await shot(P, `phone-390-${tab}-v031`); }
+  for (const tab of ['record', 'tracks', 'mix', 'effects', 'more']) { await P.tap(`.ph-tab[data-tab=${tab}]`); await sleep(250); ph[tab] = await P.evaluate(SCAN); await shot(P, `phone-390-${tab}-v031`); }
+  await P.tap('#phone .ph-steps'); await sleep(250); ph.steps = await P.evaluate(SCAN); await P.evaluate(() => __daw.phone.openSeq(false));
   await P.tap('.ph-tab[data-tab=effects]'); await P.tap('.ph-addfx'); await sleep(200); ph.sheet = await P.evaluate(SCAN); await P.keyboard.press('Escape'); await P.evaluate(() => document.querySelector('.ph-sheet') && document.querySelector('.ph-sheet').remove());
   const phHits = Object.entries(ph).filter(([, v]) => v.length);
-  ok('No emoji in any phone screen (all six tabs incl. Steps + add-effect sheet); tab bar uses SVG icons', !phHits.length && (await P.evaluate(() => document.querySelectorAll('.ph-tab svg.ico').length)) === 6, JSON.stringify(phHits));
+  ok('No emoji in any phone screen (all five tabs, the Steps slide-out and the add-effect sheet); tab bar uses SVG icons', !phHits.length && (await P.evaluate(() => document.querySelectorAll('.ph-tab svg.ico').length)) === 5, JSON.stringify(phHits));
   await P.tap('.ph-tab[data-tab=tracks]'); await sleep(250);
   await P.tap('.ph-clip'); await sleep(250);
   const pa = await P.evaluate(() => ({ key: __daw.engine.audition && __daw.engine.audition.key, cls: !!document.querySelector('.ph-clip.auditioning') }));

@@ -1,5 +1,5 @@
-// Plugin host client (VST3 / AU; CLAP planned). Plugins run in the native audio engine sidecar that ships with
-// the Auduio desktop app (Tauri shell + auduio-engine, JUCE). The web app, Android and iOS cannot host
+// Plugin host client (VST3 and CLAP). Plugins run in the native audio engine sidecar that ships with
+// the Auduio desktop app (Tauri shell + auduio-engine, written in Rust). The web app, Android and iOS cannot host
 // plugins: they show the Plugins section as desktop-only. See docs/PLUGIN-HOSTING.md.
 //
 // Transport: newline-delimited JSON. In the desktop app every line goes through the Tauri command
@@ -9,8 +9,8 @@ export const IS_TAURI = !!(W.__TAURI_INTERNALS__ || W.__TAURI__);
 export const IS_CAPACITOR = !!(W.Capacitor && W.Capacitor.isNativePlatform && W.Capacitor.isNativePlatform());
 export function pluginSupport() {
   if (IS_TAURI) return { desktop: true, reason: '' };
-  if (IS_CAPACITOR) return { desktop: false, reason: 'Plugins (VST3, AU) are available in the Auduio desktop app for Windows, macOS and Linux. Phones and tablets cannot load them.' };
-  return { desktop: false, reason: 'Plugins (VST3, AU) need the Auduio desktop app for Windows, macOS or Linux. Browsers cannot load them.' };
+  if (IS_CAPACITOR) return { desktop: false, reason: 'Plugins (VST3, CLAP) are available in the Auduio desktop app for Windows, macOS and Linux. Phones and tablets cannot load them.' };
+  return { desktop: false, reason: 'Plugins (VST3, CLAP) need the Auduio desktop app for Windows, macOS or Linux. Browsers cannot load them.' };
 }
 
 function tauriTransport(onLine, onExit) {

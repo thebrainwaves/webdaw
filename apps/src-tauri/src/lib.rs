@@ -1,5 +1,5 @@
 //! Auduio desktop shell: a native window around the bundled Auduio web app (../web).
-//! Most audio work happens in the web app (Web Audio). Tracks that use VST3/AU plugins run in
+//! Most audio work happens in the web app (Web Audio). Tracks that use VST3/CLAP plugins run in
 //! the native audio engine sidecar (auduio-engine, see sidecar.rs and docs/PLUGIN-HOSTING.md);
 //! this shell supervises that process and relays its newline-delimited JSON protocol:
 //!   invoke("engine_send", { line })  -> one command to the engine (started on first use)

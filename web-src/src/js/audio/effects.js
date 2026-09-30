@@ -430,7 +430,7 @@ export class Distortion extends Effect {
   init(values) { super.init(values); this.rewire(); this.applyCab(); return this; }
 }
 
-// ---------------------------------------------------------------- Pitch correction (auto-tune style)
+// ---------------------------------------------------------------- Pitch correction (snaps the sung pitch to the scale)
 export class PitchCorrect extends Effect {
   static get label() { return 'Pitch Correct'; }
   static get params() {

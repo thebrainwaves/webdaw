@@ -1,4 +1,4 @@
-// Step sequencer (Squarp-style) + clip cutting, end to end in Chromium. Run: node tests/e2e-seq.mjs
+// Step sequencer + clip cutting, end to end in Chromium. Run: node tests/e2e-seq.mjs
 // Screenshots: /workspace/daw/shots/seq-*.png and clip-*.png
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
@@ -16,8 +16,8 @@ await new Promise((r) => server.stdout.once('data', r));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const errors = [];
 let browser;
-const EMOJI = `(() => { const re = /[\\p{Extended_Pictographic}\\u{1F000}-\\u{1FAFF}\\u2600-\\u27BF\\uFE0F]/u; const root = document.querySelector('#seqView').closest('body');
-  const hits = []; for (const el of document.querySelectorAll('#seqView *, .ph-body *')) { if (el.childNodes.length === 1 && el.firstChild.nodeType === 3 && re.test(el.textContent)) hits.push(el.textContent); for (const a of ['title', 'aria-label']) { const v = el.getAttribute(a); if (v && re.test(v)) hits.push(v); } } return hits; })()`;
+const EMOJI = `(() => { const re = /[\\p{Extended_Pictographic}\\u{1F000}-\\u{1FAFF}\\u2600-\\u27BF\\uFE0F]/u; const root = document.querySelector('#seqPanel').closest('body');
+  const hits = []; for (const el of document.querySelectorAll('#seqPanel *, .ph-body *, .ph-side *')) { if (el.childNodes.length === 1 && el.firstChild.nodeType === 3 && re.test(el.textContent)) hits.push(el.textContent); for (const a of ['title', 'aria-label']) { const v = el.getAttribute(a); if (v && re.test(v)) hits.push(v); } } return hits; })()`;
 // fake Web MIDI (one output) + haptics recorder
 const initMocks = () => {
   window.__midiSent = []; window.__buzz = 0;
@@ -54,14 +54,13 @@ try {
   const { ctx, page } = await newPage({ viewport: { width: 1440, height: 900 } });
 
   // ---------------- view
-  await page.click('.views button[data-view=seq]'); await sleep(150);
-  const v0 = await P(page, () => ({ shown: !document.querySelector('#seqView').hidden, btn: document.querySelector('.views button[data-view=seq]').classList.contains('on'), text: document.querySelector('#seqView').innerText }));
-  ok('"Seq" main view opens from the view switcher and offers New synth / drum sequence', v0.shown && v0.btn && /New synth sequence/.test(v0.text) && /New drum sequence/.test(v0.text));
-  await page.keyboard.press('Tab'); const afterTab = await P(page, () => __daw.S.view); await page.click('.views button[data-view=seq]');
-  ok('Tab key cycles Session -> Arrange -> Seq -> Session', afterTab === 'session');
+  const v0 = await P(page, () => ({ shown: document.querySelector('#seqPanel').getBoundingClientRect().width > 300, noView: !document.querySelector('.views button[data-view=seq]'), text: document.querySelector('#seqPanel').innerText }));
+  ok('Sequencer side panel is docked next to the Session view and offers New synth / drum sequence (no separate Seq view)', v0.shown && v0.noView && /New synth sequence/.test(v0.text) && /New drum sequence/.test(v0.text));
+  await page.keyboard.press('Tab'); const afterTab = await P(page, () => __daw.S.view); await page.keyboard.press('Tab');
+  ok('Tab key switches Session <-> Arrange', afterTab === 'arrange' && (await P(page, () => __daw.S.view)) === 'session');
 
   // ---------------- create + step entry
-  await page.click('.sq-tadd button'); await sleep(200);
+  await page.click('#seqPanel [data-act=new-synth]'); await sleep(200);
   const T1 = await sel(page);
   for (const i of [0, 4, 8, 12]) await page.click(`.sq-step[data-si="${i}"]`);
   let q = await seqOf(page, T1);
@@ -130,7 +129,7 @@ try {
   ok('Polyrhythm: per-track step rate 1/8t -> kick every 3 triplet-eighths (0.5 s)', k2.length >= 2 && dk2.every((x) => Math.abs(x - 0.5) < 0.005), dk2.join(','));
 
   // ---------------- pattern slots, chain, song mode
-  await P(page, (tid) => { __daw.S.selected = tid; __daw.S.project.bpm = 240; document.querySelector('#bpm').value = 240; }, T1); await P(page, () => document.querySelector('.views button[data-view=seq]').click()); await sleep(100);
+  await P(page, (tid) => { __daw.S.selected = tid; __daw.S.project.bpm = 240; document.querySelector('#bpm').value = 240; __daw.seq.render(); }, T1); await sleep(100);
   await page.click('.sq-slot[data-slot="1"]'); await sleep(100);
   await page.click('.sq-step[data-si="0"]'); await page.click('.sq-step[data-si="0"] .sq-num'); await sleep(50);
   await page.click('.sq-step[data-si="0"] .sq-num'); await page.click('.sq-key[data-note="72"]'); await sleep(50);
@@ -254,32 +253,33 @@ try {
   const ph = await newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 }, { guideDone: true, tutorialDone: true, phoneMode: 'on', haptics: true });
   const pp = ph.page;
   await P(pp, () => { const { S } = __daw; const t = S.project.tracks.find((x) => x.kind === 'audio'); S.selected = t.id; });
-  await P(pp, () => document.querySelector('.ph-tab[data-tab=seq]').click()); await sleep(150);
-  const needMidi = await P(pp, () => document.querySelector('.ph-body').innerText);
-  await P(pp, () => [...document.querySelectorAll('.ph-body .ph-big')].find((b) => /instrument track/i.test(b.textContent)).click()); await sleep(250);
-  const phq = await P(pp, () => ({ grid: !!document.querySelector('.ph-body .sq-grid'), cols: getComputedStyle(document.querySelector('.ph-body .sq-grid')).gridTemplateColumns.split(' ').length, h: document.querySelector('.ph-body .sq-step').getBoundingClientRect().height }));
-  ok('Phone: "Steps" tab explains it needs an instrument track, makes one, shows 8 steps per row with big touch targets', /instrument \(MIDI\) tracks/.test(needMidi) && phq.grid && phq.cols === 8 && phq.h >= 44, JSON.stringify(phq));
+  await pp.tap('#phone .ph-steps'); await sleep(250);
+  const needMidi = await P(pp, () => document.querySelector('.ph-side-body').innerText);
+  await P(pp, () => [...document.querySelectorAll('.ph-side-body .ph-big')].find((b) => /instrument track/i.test(b.textContent)).click()); await sleep(250);
+  const phq = await P(pp, () => ({ grid: !!document.querySelector('.ph-side-body .sq-grid'), cols: getComputedStyle(document.querySelector('.ph-side-body .sq-grid')).gridTemplateColumns.split(' ').length, h: document.querySelector('.ph-side-body .sq-step').getBoundingClientRect().height }));
+  ok('Phone: the Steps slide-out explains it needs an instrument track, makes one, shows 8 steps per row with big touch targets', /instrument \(MIDI\) tracks/.test(needMidi) && phq.grid && phq.cols === 8 && phq.h >= 44, JSON.stringify(phq));
   const b0 = await P(pp, () => window.__buzz);
-  for (const i of [0, 3, 6, 10, 12]) await pp.tap(`.ph-body .sq-step[data-si="${i}"]`);
+  for (const i of [0, 3, 6, 10, 12]) await pp.tap(`.ph-side-body .sq-step[data-si="${i}"]`);
   const PT = await sel(pp);
   const phs = await seqOf(pp, PT); const buzz = await P(pp, () => window.__buzz);
   ok('Phone: tapping steps turns them on, with haptic feedback', phs.patterns[0].steps.filter((s) => s.on).length === 5 && buzz > b0, `buzz=${buzz - b0}`);
   await P(pp, (tid) => { const p = __daw.S.project.tracks.find((t) => t.id === tid).seq.patterns[0]; p.steps[3].prob = 50; p.steps[6].rat = 3; p.steps[10].pl = { 'inst|cutoff': 600 }; __daw.phone.render(); }, PT);
-  await pp.tap('.ph-body .sq-step[data-si="6"] .sq-num'); await sleep(100);
+  await pp.tap('.ph-side-body .sq-step[data-si="6"] .sq-num'); await sleep(100);
   await P(pp, () => __daw.engine.play(0)); await sleep(700);
   await shot(pp, 'seq-phone-steps');
   await P(pp, () => { __daw.engine.stop(); __daw.engine.stop(); });
-  await P(pp, () => document.querySelector('.ph-body').scrollTop = 400); await sleep(100);
+  await P(pp, () => document.querySelector('.ph-side-body').scrollTop = 400); await sleep(100);
   await shot(pp, 'seq-phone-steps-inspector');
   // phone drums
-  await P(pp, () => { document.querySelector('.ph-tab[data-tab=tracks]').click(); [...document.querySelectorAll('.ph-body .ph-big')].find((b) => /Tap drum pads/.test(b.textContent)).click(); }); await sleep(150);
-  await P(pp, () => { const { S } = __daw; const L = S.project.tracks.filter((x) => x.kind === 'midi' && x.inst.type === 'drums'); S.selected = L[L.length - 1].id; document.querySelector('.ph-tab[data-tab=seq]').click(); }); await sleep(150);
-  const hasDrum = await P(pp, () => { const b = [...document.querySelectorAll('.ph-body button')].find((x) => /Add step sequencer/.test(x.textContent)); if (b) b.click(); return !!b; }); await sleep(150);
-  if (hasDrum) { for (const [si, n] of [[0, 36], [4, 36], [2, 42], [6, 42], [4, 38]]) await pp.tap(`.ph-body .sq-dcell[data-si="${si}"][data-n="${n}"]`); }
-  const dcols = await P(pp, () => document.querySelectorAll('.ph-body .sq-drow.head .sq-dnum').length);
+  await P(pp, () => { __daw.phone.openSeq(false); document.querySelector('.ph-tab[data-tab=tracks]').click(); [...document.querySelectorAll('.ph-body .ph-big')].find((b) => /Tap drum pads/.test(b.textContent)).click(); }); await sleep(150);
+  await P(pp, () => { const { S } = __daw; const L = S.project.tracks.filter((x) => x.kind === 'midi' && x.inst.type === 'drums'); S.selected = L[L.length - 1].id; __daw.phone.openSeq(true); }); await sleep(250);
+  const hasDrum = await P(pp, () => { const b = [...document.querySelectorAll('.ph-side-body button')].find((x) => /Add step sequencer/.test(x.textContent)); if (b) b.click(); return !!b; }); await sleep(150);
+  if (hasDrum) { for (const [si, n] of [[0, 36], [4, 36], [2, 42], [6, 42], [4, 38]]) await pp.tap(`.ph-side-body .sq-dcell[data-si="${si}"][data-n="${n}"]`); }
+  const dcols = await P(pp, () => document.querySelectorAll('.ph-side-body .sq-drow.head .sq-dnum').length);
   ok('Phone drums: pad rows, 8 steps per page', hasDrum && dcols === 8, `cols=${dcols}`);
-  await P(pp, () => document.querySelector('.ph-body').scrollTop = 0);
+  await P(pp, () => document.querySelector('.ph-side-body').scrollTop = 0);
   await shot(pp, 'seq-phone-drums');
+  await P(pp, () => __daw.phone.openSeq(false)); await sleep(200);
   // phone clip long-press -> Split here
   await P(pp, () => { const { engine, S } = __daw; const sr = engine.ctx.sampleRate, b = engine.ctx.createBuffer(1, sr * 4, sr); engine.buffers.set('bp', b); const t = S.project.tracks.find((x) => x.kind === 'audio'); t.arrangement = [{ id: 'cp', bufferId: 'bp', start: 0, offset: 0, duration: 4, name: 'Vocal' }]; S.selected = t.id; engine.setPosition(1.5); document.querySelector('.ph-tab[data-tab=tracks]').click(); });
   await sleep(150);

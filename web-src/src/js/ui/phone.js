@@ -15,7 +15,7 @@ const PLAIN_PARAM = { threshold: 'How much', ratio: 'Strength', makeup: 'Loudnes
   sync: 'Timing', drive: 'Grit amount', level: 'Output', voicing: 'Style', lowGain: 'Bass', m1Gain: 'Low mids', m2Gain: 'High mids', highGain: 'Treble',
   speed: 'Snap speed', humanize: 'Natural feel', depth: 'Depth', rate: 'Speed', gain: 'Gain', ceiling: 'Max level', input: 'Input', channel: 'Channel',
   bass: 'Bass', mid: 'Mids', treble: 'Treble', master: 'Volume', macro1: 'Macro 1', macro2: 'Macro 2', macro3: 'Macro 3', macro4: 'Macro 4' };
-const TABS = [['record', 'record', 'Record'], ['tracks', 'tracks', 'Tracks'], ['seq', 'seq', 'Steps'], ['mix', 'mixer', 'Mix'], ['effects', 'fx', 'Effects'], ['more', 'more', 'More']];
+const TABS = [['record', 'record', 'Record'], ['tracks', 'tracks', 'Tracks'], ['mix', 'mixer', 'Mix'], ['effects', 'fx', 'Effects'], ['more', 'more', 'More']];
 
 export function wantsPhone() {
   const mode = prefs.phoneMode || 'auto';
@@ -25,7 +25,7 @@ export function wantsPhone() {
 
 export function createPhone(api) {
   const { S, engine } = api;
-  let root = null, tab = 'record', active = false, wave = null, lastDraw = 0, carry = null, quietUntil = 0;
+  let root = null, tab = 'record', active = false, seqOpen = false, side = null, wave = null, lastDraw = 0, carry = null, quietUntil = 0;
   const focused = () => { let t = api.track(S.selected); if (!t || t.kind === 'group') t = S.project.tracks.find((x) => x.kind !== 'group') || null; if (t) S.selected = t.id; return t; };
   const tracksList = () => S.project.tracks.filter((t) => t.kind !== 'group');
   function move(d) {
@@ -41,10 +41,16 @@ export function createPhone(api) {
     const bar = h('div', { class: 'ph-top' },
       h('span', { class: 'ph-title' }), h('span', { class: 'ph-pos' }, '1.1.1'),
       h('button', { class: 'ph-play', 'aria-label': 'Play or stop', title: 'Play / stop', onclick: () => { haptic(10); api.togglePlay(); } }, icon('play')),
+      h('button', { class: 'ph-steps', 'aria-label': 'Step sequencer', 'aria-expanded': 'false', title: 'Step sequencer (slides in from the side)', onclick: () => openSeq(!seqOpen) }, icon('seq')),
       h('button', { class: 'ph-undo', 'aria-label': 'Undo', title: 'Undo', onclick: () => api.undo() }, icon('undo')));
     const body = h('div', { class: 'ph-body' });
     const tabs = h('nav', { class: 'ph-tabs', role: 'tablist' }, TABS.map(([k, ico, label]) => h('button', { class: 'ph-tab', 'data-tab': k, role: 'tab', 'aria-label': label, onclick: () => show(k) }, h('span', { class: 'tab-ico' }, icon(ico)), h('span', { class: 'lbl' }, label))));
-    root.append(bar, body, tabs); document.body.append(root);
+    side = h('div', { class: 'ph-side', role: 'dialog', 'aria-label': 'Step sequencer', hidden: true });
+    // close only on a real tap on the dim backdrop: a step that re-renders during the tap makes the browser retarget the click to the backdrop
+    let downOnBackdrop = false;
+    side.addEventListener('pointerdown', (e) => { downOnBackdrop = e.target === side; });
+    side.addEventListener('click', (e) => { if (e.target === side && downOnBackdrop) openSeq(false); downOnBackdrop = false; });
+    root.append(bar, body, tabs, side); document.body.append(root);
     // the finger that long-pressed a clip must not "tap" whatever the re-rendered screen puts under it
     root.addEventListener('click', (e) => { if (Date.now() < quietUntil) { e.preventDefault(); e.stopPropagation(); } }, true);
     // swipe between tracks (not on sliders / waveform scrubbing)
@@ -55,7 +61,8 @@ export function createPhone(api) {
       if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - st < 800 && tab !== 'more') move(dx < 0 ? 1 : -1);
     });
   }
-  function show(k) { tab = k; haptic(6); render(); }
+  function show(k) { tab = k; haptic(6); if (seqOpen) openSeq(false); else render(); }
+  function openSeq(on) { seqOpen = !!on; haptic(on ? 10 : 6); if (!on && api.seqView) api.seqView.leavePhone(); render(); }
   function pager(t) {
     const L = tracksList(), i = L.indexOf(t);
     return h('div', { class: 'ph-pager' },
@@ -249,7 +256,7 @@ export function createPhone(api) {
         big([icon('settings'), ' Settings'], 'Bigger text, contrast, haptics, tier…', () => api.prefsDialog()),
         big([icon('desktop'), ' Show full layout'], 'All controls (more complex)', () => { prefs.phoneMode = 'off'; savePrefs(); setActive(false); api.renderAll(); toast('Full layout. Switch back in Menu → Simple phone layout.', 3000); }, 'ph-full'))];
   }
-  // Steps tab: the step sequencer for the focused track (MIDI tracks only), laid out 8 steps per row
+  // slide-out step sequencer for the focused track (MIDI tracks only), laid out 8 steps per row
   function seqScreen(t) {
     if (!t || t.kind !== 'midi') {
       const L = tracksList().filter((x) => x.kind === 'midi');
@@ -266,8 +273,16 @@ export function createPhone(api) {
     root.querySelector('.ph-play').replaceChildren(icon(engine.playing ? 'stop' : 'play'));
     root.querySelector('.ph-play').classList.toggle('on', engine.playing);
     const body = root.querySelector('.ph-body'); body.innerHTML = ''; wave = null;
-    const scr = tab === 'record' ? recordScreen(t) : tab === 'tracks' ? tracksScreen(t) : tab === 'seq' ? seqScreen(t) : tab === 'mix' ? mixScreen(t) : tab === 'effects' ? effectsScreen(t) : moreScreen();
+    const scr = tab === 'record' ? recordScreen(t) : tab === 'tracks' ? tracksScreen(t) : tab === 'mix' ? mixScreen(t) : tab === 'effects' ? effectsScreen(t) : moreScreen();
     body.dataset.tab = tab; body.append(...scr.filter(Boolean));
+    const sb = root.querySelector('.ph-steps'); sb.classList.toggle('on', seqOpen); sb.setAttribute('aria-expanded', String(seqOpen));
+    side.hidden = !seqOpen; root.classList.toggle('seq-open', seqOpen);
+    if (seqOpen) {
+      const keep = side.firstChild && side.firstChild.querySelector('.ph-side-body') ? side.firstChild.querySelector('.ph-side-body').scrollTop : 0;
+      const sbody = h('div', { class: 'ph-side-body' }, ...seqScreen(t).filter(Boolean));
+      side.replaceChildren(h('div', { class: 'ph-side-card' }, h('div', { class: 'ph-side-head' }, h('span', { class: 'ph-h' }, 'Step sequencer'), h('button', { class: 'ph-side-close', 'aria-label': 'Close the step sequencer', onclick: () => openSeq(false) }, icon('close'))), sbody));
+      sbody.scrollTop = keep;
+    } else side.replaceChildren();
   }
   function frame(ts) {
     if (!active || !root) return;
@@ -278,5 +293,5 @@ export function createPhone(api) {
     if (wave && ts - lastDraw > 80 && (engine.recording || engine.playing || engine.audition)) { lastDraw = ts; drawWave(); }
   }
   const fmtTime = (s) => { s = Math.max(0, s); return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`; };
-  return { setActive, render, frame, show, get active() { return active; }, get tab() { return tab; }, move, get carry() { return carry; } };
+  return { setActive, render, frame, show, openSeq, get seqOpen() { return active && seqOpen; }, get active() { return active; }, get tab() { return tab; }, move, get carry() { return carry; } };
 }

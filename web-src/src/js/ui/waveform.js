@@ -1,4 +1,4 @@
-// Waveform rendering (Ableton-style): per-channel peak mipmaps (min/max/RMS) cached per AudioBuffer,
+// Waveform rendering: per-channel peak mipmaps (min/max/RMS) cached per AudioBuffer,
 // zoom-aware drawing that picks the right mipmap level (or raw samples when zoomed far in), stereo as
 // two lanes when tall enough, live peaks for recordings, and a small oscilloscope. Canvas 2D only;
 // the expensive part (peaks) is computed once per buffer and cached.
@@ -70,8 +70,13 @@ export function drawWaveform(canvas, src, { startSec = 0, endSec = null, color =
     if (spp < 1.5 && chans[0].data) {
       // zoomed far in: draw the sample curve
       g.strokeStyle = color; g.lineWidth = Math.max(1, dpr * 1.2); g.beginPath();
-      for (let x = 0; x < w; x++) { const i = Math.floor(startSec * sr + x * spp); let v = 0; for (const c of chans) v += (c.data[i] || 0); v /= chans.length; const y = mid - v * amp; x ? g.lineTo(x, y) : g.moveTo(x, y); }
-      g.stroke(); usedBlock = 1; continue;
+      // one point per sample, joined by lines; at >= 6 px per sample each sample also gets a dot
+      const s0 = startSec * sr, i0 = Math.max(0, Math.floor(s0)), i1 = Math.min(len - 1, Math.ceil(s0 + w * spp) + 1);
+      const val = (i) => { let v = 0; for (const c of chans) v += (c.data[i] || 0); return v / chans.length; };
+      for (let i = i0; i <= i1; i++) { const x = (i - s0) / spp, y = mid - val(i) * amp; i === i0 ? g.moveTo(x, y) : g.lineTo(x, y); }
+      g.stroke();
+      if (1 / spp >= 6) { g.fillStyle = color; const r = Math.max(1.5, dpr * 1.6); for (let i = i0; i <= i1; i++) { const x = (i - s0) / spp, y = mid - val(i) * amp; g.fillRect(x - r, y - r, 2 * r, 2 * r); } }
+      usedBlock = 1; continue;
     }
     // choose the finest level whose block is <= samples per pixel
     let li = 0; const lv = chans[0].levels; while (li + 1 < lv.length && lv[li + 1].block <= spp) li++;

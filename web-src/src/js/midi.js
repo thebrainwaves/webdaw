@@ -1,14 +1,20 @@
-// Web MIDI input: feature detection, input listing, message parsing. Routing, recording and
-// MIDI-learn live in main.js via the callbacks below.
+// MIDI input: feature detection, input listing, message parsing. Routing, recording and MIDI-learn live in
+// main.js via the callbacks below. Sources: Web MIDI (browsers, Windows desktop app) and, where the webview has
+// no Web MIDI (macOS/Linux desktop app), the native engine's MIDI input (engine command midiin.*; channel
+// messages only, rate-limited in the engine). Engine input ids are "engine:<port name>".
 export const MIDI = {
-  supported: typeof navigator !== 'undefined' && typeof navigator.requestMIDIAccess === 'function',
-  access: null, status: 'idle', error: null,
+  webSupported: typeof navigator !== 'undefined' && typeof navigator.requestMIDIAccess === 'function',
+  get supported() { return this.webSupported || engineMidi.inAvailable; },
+  access: null, status: 'idle', error: null, engineInputs: [],
   onNote: null,   // (inputId, ch, note, velocity, isOn, timeStamp)
   onCC: null,     // (inputId, ch, cc, value)
   onDevices: null,
   onBend: null,   // (inputId, ch, value -1..1)
   async init() {
-    if (!this.supported) { this.status = 'unsupported'; return false; }
+    if (!this.webSupported) {
+      if (!engineMidi.inAvailable) { this.status = 'unsupported'; return false; }
+      await engineMidi.openInputs(); this.status = 'ready'; return true;
+    }
     if (this.access) return true;
     try {
       this.access = await navigator.requestMIDIAccess({ sysex: false });
@@ -19,9 +25,9 @@ export const MIDI = {
       return true;
     } catch (e) { this.status = 'denied'; this.error = e.message || String(e); return false; }
   },
-  inputs() { return this.access ? [...this.access.inputs.values()].map((i) => ({ id: i.id, name: i.name || 'MIDI input', state: i.state })) : []; },
+  inputs() { const web = this.access ? [...this.access.inputs.values()].map((i) => ({ id: i.id, name: i.name || 'MIDI input', state: i.state })) : []; const names = new Set(web.map((i) => i.name)); return web.concat(this.engineInputs.filter((i) => !names.has(i.name))); },
   handle(inputId, e) {
-    const d = e.data; if (!d || d.length < 2) return;
+    const d = e.data; if (!d || d.length < 2 || d[0] >= 0xf0) return;
     const st = d[0] & 0xf0, ch = d[0] & 0x0f;
     if (st === 0x90 && d[2] > 0) this.onNote && this.onNote(inputId, ch, d[1], d[2], true, e.timeStamp);
     else if (st === 0x80 || (st === 0x90 && d[2] === 0)) this.onNote && this.onNote(inputId, ch, d[1], 0, false, e.timeStamp);
@@ -31,6 +37,7 @@ export const MIDI = {
   notice() {
     const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     if (this.supported) return null;
+    if (typeof window !== 'undefined' && (window.__TAURI__ || window.__TAURI_INTERNALS__)) return 'MIDI devices are handled by the audio engine, which is not running. Restart Auduio; the on-screen keyboard, the computer keyboard (M) and the piano roll still work.';
     return ios ? 'Web MIDI is not available in Safari on iPhone/iPad (Apple does not support it). You can still play MIDI tracks with the on-screen keyboard/pads and edit notes in the piano roll.'
       : 'This browser has no Web MIDI support. Use Chrome, Edge or Firefox on desktop/Android for MIDI keyboards; the on-screen keyboard and piano roll still work.';
   },
@@ -53,6 +60,29 @@ export const engineMidi = {
     return this.ports;
   },
   get available() { return !!this.client; },
+  // ---- MIDI input through the engine
+  inClient: null, inTimer: null, opened: new Set(),
+  attachIn(client) {
+    this.inClient = client && client.info && client.info.midiIn ? client : null;
+    if (!this.inClient || this._inHooked === client) return;
+    this._inHooked = client;
+    client.on('midiin', (m) => { if (!Array.isArray(m.d) || typeof m.port !== 'string') return; MIDI.handle(ENGINE_PREFIX + m.port.slice(0, 256), { data: m.d.slice(0, 3), timeStamp: performance.now() }); });
+    client.on('exit', () => { this.opened.clear(); });
+  },
+  get inAvailable() { return !!this.inClient; },
+  async openInputs() {
+    const c = this.inClient; if (!c) return [];
+    try {
+      const r = await c.request('midiin.list', {}, 5000);
+      const ports = (r.ports || []).slice(0, 16);
+      const before = MIDI.engineInputs.map((i) => i.id).join('|');
+      MIDI.engineInputs = ports.map((p) => ({ id: ENGINE_PREFIX + p.id, name: String(p.name || 'MIDI input').slice(0, 64), state: 'connected', engine: true }));
+      for (const p of ports) if (!this.opened.has(p.id)) { try { await c.request('midiin.open', { port: p.id }, 5000); this.opened.add(p.id); } catch (e) { console.warn('MIDI input', p.id, e.message); } }
+      if (!this.inTimer) this.inTimer = setInterval(() => { if (this.inClient) this.openInputs(); }, 5000); // hot-plug
+      if (MIDI.onDevices && before !== MIDI.engineInputs.map((i) => i.id).join('|')) MIDI.onDevices(MIDI.inputs());
+    } catch (e) { MIDI.engineInputs = []; }
+    return MIDI.engineInputs;
+  },
 };
 export function outputs() {
   const web = MIDI.access ? [...MIDI.access.outputs.values()].map((o) => ({ id: o.id, name: (o.name || 'MIDI output').slice(0, 64), state: o.state })) : [];

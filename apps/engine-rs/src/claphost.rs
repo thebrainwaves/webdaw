@@ -163,7 +163,7 @@ static NOTE_PORTS: clap_host_note_ports = clap_host_note_ports { supported_diale
 static HOST_NAME: &CStr = c"Auduio";
 static HOST_VENDOR: &CStr = c"Auduio";
 static HOST_URL: &CStr = c"https://github.com/thebrainwaves/webdaw";
-static HOST_VERSION: &CStr = c"0.5.0";
+static HOST_VERSION: &CStr = c"0.5.1";
 
 fn make_host(hd: *const HostData) -> Box<clap_host> {
     Box::new(clap_host {

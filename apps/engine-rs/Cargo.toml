@@ -1,9 +1,9 @@
 [package]
 name = "auduio-engine"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
-license = "MIT"
-description = "Auduio native plugin engine (VST3 + CLAP host), JUCE-free"
+license = "LicenseRef-Auduio-Proprietary"  # proprietary, all rights reserved (see ../../LICENSE)
+description = "Auduio native plugin engine (VST3 + CLAP host)"
 publish = false
 
 [[bin]]

@@ -25,7 +25,8 @@
     <button id="btnStop" title="Stop (press twice: return to start)" aria-label="Stop"><svg class="ico ico-stop" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="6.5" y="6.5" width="11" height="11" rx="1" fill="currentColor" stroke="none"/></svg></button>
     <button id="btnRec" class="rec" title="Arrangement record (R): records all armed tracks onto the timeline" aria-label="Record"><svg class="ico ico-record" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="6" fill="currentColor" stroke="none"/></svg></button>
     <button id="btnAutoRec" class="autorec adv" title="Auto-record: waits until an armed input gets loud, then records (with pre-roll). Threshold in Preferences." aria-label="Auto record">AUTO</button>
-    <button id="btnMetro" title="Metronome (M)" aria-label="Metronome" class="metro adv">MET</button>
+    <button id="btnMetro" title="Metronome (Shift+M)" aria-label="Metronome" class="metro adv">MET</button>
+    <button id="btnKeys" class="keys-btn" title="Computer MIDI keyboard (M): play the selected instrument track with the letter keys A to ; (Z/X octave, C/V velocity)" aria-label="Computer MIDI keyboard" aria-pressed="false">KEYS</button>
     <button id="btnLoop" class="loop-btn" title="Loop the arrangement between the loop markers (Ctrl/Cmd+L loops the selected clip)" aria-label="Loop" aria-pressed="false"><svg class="ico ico-loop" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m17 2 3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="m7 22-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/></svg></button>
     <label class="bpm" title="Tempo in beats per minute">BPM <input id="bpm" type="number" min="40" max="300" step="0.1" value="120" inputmode="decimal"></label>
     <button id="btnTap" class="tap" title="Tap tempo (T): tap 3–8 times on the beat" aria-label="Tap tempo">TAP</button>
@@ -33,7 +34,7 @@
     <div id="posDisplay" class="pos" title="Position: bar.beat.sixteenth">1.1.1</div>
   </div>
   <div class="hist"><button id="btnUndo" class="btn-undo" title="Undo (Ctrl/Cmd+Z)" aria-label="Undo" disabled><svg class="ico ico-undo" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button><button id="btnRedo" class="btn-redo" title="Redo (Ctrl/Cmd+Shift+Z)" aria-label="Redo" disabled><svg class="ico ico-redo" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button></div>
-  <div class="views"><button data-view="session" class="on" title="Session view: clip launcher and mixer">Session</button><button data-view="arrange" title="Arrangement view: timeline">Arrange</button><button data-view="seq" title="Step sequencer: patterns, steps, chains (Squarp-style)">Seq</button></div>
+  <div class="views"><button data-view="session" class="on" title="Session view: clip launcher and mixer">Session</button><button data-view="arrange" title="Arrangement view: timeline">Arrange</button></div>
   <button id="btnAutoMix" class="automix" title="Auto-Mix setup: tell the app what each track is (or let it suggest), then it sets up EQ, compression and effects">Auto-Mix</button>
   <button id="btnEasy" class="tog" title="Easy Mode: fewer controls, bigger labels">Easy</button>
   <button id="btnHelp" class="tog" title="Help mode: tap any control to see what it does" aria-label="Help">?</button>
@@ -47,13 +48,13 @@
 <main id="main">
   <section id="sessionView" class="view"></section>
   <section id="arrangeView" class="view" hidden></section>
-  <section id="seqView" class="view" hidden></section>
 </main>
 <section id="devicePanel">
   <div id="devHead" class="dev-head"></div>
   <div id="devices" class="devices"></div>
 </section>
 </div>
+<aside id="seqPanel" aria-label="Step sequencer"></aside>
 </div>
 <div id="startOverlay">
   <div class="start-card">

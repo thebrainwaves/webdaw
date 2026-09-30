@@ -545,18 +545,28 @@ export class Engine {
       const s0 = Math.max(p0, c.start), e0 = Math.min(p1, c.start + c.duration);
       if (e0 - s0 < 0.0005) continue;
       const src = this.ctx.createBufferSource(); src.buffer = buf;
-      // transpose = repitch (tape-style: pitch and speed change together); timeline length stays c.duration
+      // transpose = repitch (like tape: pitch and speed change together); timeline length stays c.duration
       const rate = Math.pow(2, (c.transpose || 0) / 12); src.playbackRate.value = rate;
-      const g = this.ctx.createGain(); g.gain.value = dbToLin(c.gain || 0);
+      const g = this.ctx.createGain(); const lvl = dbToLin(c.gain || 0);
       src.connect(g).connect(n.input);
       const when = Math.max(this.ctx.currentTime, ctxAtP0 + (s0 - p0));
       const offs = c.offset + (s0 - c.start) * rate;
       const dur = (e0 - s0) * rate;
+      this.clipEnvelope(g.gain, c, lvl, s0 - c.start, when);
       try { src.start(when, offs, dur); } catch (e) { continue; }
       src._clipId = c.id; src._gain = g;
       src.onended = () => { const i = n.sources.indexOf(src); if (i >= 0) n.sources.splice(i, 1); try { g.disconnect(); } catch (e) {} };
       n.sources.push(src);
     }
+  }
+  // Clip fade in / fade out (timeline seconds, linear). x0 = position inside the clip heard at ctx time `when`.
+  clipEnvelope(param, c, lvl, x0, when) {
+    const D = c.duration, fi = Math.min(Math.max(0, c.fadeIn || 0), D), fo = Math.min(Math.max(0, c.fadeOut || 0), D - fi);
+    if (!fi && !fo) { param.value = lvl; return; }
+    const f = (x) => lvl * Math.max(0, Math.min(1, fi > 0 ? x / fi : 1, fo > 0 ? (D - x) / fo : 1));
+    param.setValueAtTime(f(x0), when);
+    if (fi > 0 && x0 < fi) param.linearRampToValueAtTime(f(fi), when + (fi - x0));
+    if (fo > 0) { const fs = D - fo; if (x0 < fs) param.setValueAtTime(f(fs), when + (fs - x0)); param.linearRampToValueAtTime(0, when + (D - x0)); }
   }
   // schedule the next loop pass(es) for every track shortly before they start
   loopTick() {
@@ -609,6 +619,7 @@ export class Engine {
   updateClipLive(t, c, what) {
     const n = this.tracks.get(t.id); if (!n) return;
     const now = this.ctx.currentTime;
+    if (what === 'gain' && (c.fadeIn || c.fadeOut) && !(n.sessionSource && n.sessionSource._clip === c)) return this.rescheduleTrack(t);
     if (what === 'gain') {
       n.sources.forEach((s) => { if (s._clipId === c.id && s._gain) s._gain.gain.setTargetAtTime(dbToLin(c.gain || 0), now, 0.01); });
       if (n.sessionSource && n.sessionSource._clip === c && n.sessionSource._gain) n.sessionSource._gain.gain.setTargetAtTime(dbToLin(c.gain || 0), now, 0.01);

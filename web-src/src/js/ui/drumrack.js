@@ -1,4 +1,4 @@
-// Drum Rack UI (Ableton-style): 128 pads = MIDI notes 0-127. A tiny 4x32 overview of all pads (pads with
+// Drum Rack UI: 128 pads = MIDI notes 0-127. A tiny 4x32 overview of all pads (pads with
 // your own sample are lit) sits beside the 4x4 pad view; click or drag in the overview to choose which 16
 // pads are shown. Pads take user samples (drag and drop files or a folder, or "Load sample"), each with
 // trim, gain, pitch, one-shot/gate and choke group. All edits go through api.change() (undoable).

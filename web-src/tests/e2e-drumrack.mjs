@@ -161,7 +161,7 @@ try {
   ok('Double-click a My Samples entry: it goes on the selected pad (48), sharing the stored audio', pd[48] && pd[48].bufferId === pd[36].bufferId, JSON.stringify(pd[48]));
 
   // sequencer: rows = the 16 pads in view; scrolling the rack changes the rows; a step on a far pad plays its sample
-  await P(page, () => document.querySelector('.views button[data-view=seq]').click()); await sleep(200);
+  await P(page, () => __daw.seq.render()); await sleep(200);
   await P(page, () => { const b = document.querySelector('[data-act=enable]'); if (b) b.click(); }); await sleep(150);
   const rows1 = await P(page, () => [...document.querySelectorAll('.sq-drow:not(.head) .sq-pad')].map((x) => x.textContent));
   await pickFiles(page, async () => { await P(page, (tid) => { const t = __daw.S.project.tracks.find((x) => x.id === tid); __daw.drumRack.setView(t, 100); __daw.drumRack.select(t, 100); }, tid); await P(page, () => __daw.drumRack.pick(__daw.S.project.tracks.find((x) => x.id === __daw.S.selected), 100, false)); }, [snare]); await sleep(700);

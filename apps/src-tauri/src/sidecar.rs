@@ -1,4 +1,4 @@
-//! Process supervisor for the native audio engine (auduio-engine, JUCE C++; see ../engine and
+//! Process supervisor for the native audio engine (auduio-engine, Rust; see ../engine-rs and
 //! docs/PLUGIN-HOSTING.md). Pure std: no Tauri types, so it is unit-tested on its own
 //! (cargo test) and the Tauri glue in lib.rs stays thin.
 //!

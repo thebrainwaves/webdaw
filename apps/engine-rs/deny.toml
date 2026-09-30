@@ -1,6 +1,6 @@
 # Licence gate for the Auduio engine (run: cargo deny check licenses). Only permissive licences are allowed:
-# no GPL/LGPL/AGPL and no commercial/proprietary terms, so the engine can ship under Auduio's own terms without
-# a JUCE (or any other) commercial licence. CI fails if a dependency brings in anything else.
+# no GPL/LGPL/AGPL and no commercial/proprietary terms (MPL-2.0 is file-level and used unmodified), so it can ship under Auduio's own terms.
+# CI fails if a dependency brings in anything else.
 [graph]
 targets = [
     "x86_64-unknown-linux-gnu",
@@ -29,7 +29,8 @@ confidence-threshold = 0.9
 unused-allowed-license = "allow"
 
 [licenses.private]
-ignore = false
+# Auduio's own crates (publish = false) are not third-party dependencies; their licence is the owner's choice (LICENSE)
+ignore = true
 
 [bans]
 multiple-versions = "allow"

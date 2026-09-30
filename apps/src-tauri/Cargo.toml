@@ -1,9 +1,10 @@
 [package]
 name = "auduio"
-version = "0.5.0"
+version = "0.5.1"
 description = "Auduio - a recording machine for your computer"
 authors = ["thebrainwaves"]
-license = "MIT"
+license = "LicenseRef-Auduio-Proprietary"  # proprietary, all rights reserved (see ../../LICENSE)
+publish = false
 edition = "2021"
 rust-version = "1.77"
 

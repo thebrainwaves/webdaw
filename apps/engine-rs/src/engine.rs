@@ -19,6 +19,7 @@ struct Inst { plugin: Arc<dyn Plugin>, track: String, name: String }
 
 pub struct Engine {
     midi_out: crate::midiout::MidiOut,
+    midi_in: crate::midiin::MidiIn,
     shared: Arc<Shared>,
     scanner: Scanner,
     instances: BTreeMap<i32, Inst>,
@@ -35,7 +36,7 @@ fn b64() -> base64::engine::GeneralPurpose { base64::engine::general_purpose::ST
 
 impl Engine {
     pub fn new() -> Engine {
-        Engine { shared: Arc::new(Shared::new()), scanner: Scanner::new(), instances: BTreeMap::new(), tracks: BTreeMap::new(), next_id: 1, device: None, gen: 0, graveyard: vec![], quit: false, midi_out: crate::midiout::MidiOut::new() }
+        Engine { shared: Arc::new(Shared::new()), scanner: Scanner::new(), instances: BTreeMap::new(), tracks: BTreeMap::new(), next_id: 1, device: None, gen: 0, graveyard: vec![], quit: false, midi_out: crate::midiout::MidiOut::new(), midi_in: crate::midiin::MidiIn::new() }
     }
 
     fn track(&mut self, id: &str) -> Result<&mut Track, String> {
@@ -107,9 +108,9 @@ impl Engine {
     fn device_info(&self) -> Value { self.device.as_ref().map(|d| d.info.clone()).unwrap_or_else(|| json!({ "open": false })) }
 
     fn hello(&self) -> Value {
-        json!({ "engine": "auduio-engine", "version": VERSION, "protocol": PROTOCOL_VERSION, "host": format!("auduio-rs {VERSION} (JUCE-free)"),
+        json!({ "engine": "auduio-engine", "version": VERSION, "protocol": PROTOCOL_VERSION, "host": format!("auduio-rs {VERSION}"),
                 "os": match std::env::consts::OS { "linux" => "Linux", "windows" => "Windows", "macos" => "macOS", o => o }, "formats": crate::scanner::FORMATS, "sampleRate": self.shared.sample_rate.get(),
-                "blockSize": self.shared.block_size.load(Ordering::SeqCst), "device": self.device_info(), "dataDir": crate::util::data_dir().to_string_lossy(), "midiOut": true })
+                "blockSize": self.shared.block_size.load(Ordering::SeqCst), "device": self.device_info(), "dataDir": crate::util::data_dir().to_string_lossy(), "midiOut": true, "midiIn": true })
     }
 
     fn param_list(&self, p: &Arc<dyn Plugin>) -> Value {
@@ -312,6 +313,7 @@ impl Engine {
             }
             "render" => self.render(a),
             c if c.starts_with("midiout.") => self.midi_out.handle(c, a),
+            c if c.starts_with("midiin.") => self.midi_in.handle(c, a),
             "quit" => { self.quit = true; Ok(json!(true)) }
             _ => Err(format!("unknown command: {cmd}")),
         }
