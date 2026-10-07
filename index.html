@@ -36,6 +36,7 @@
   <div class="views"><button data-view="session" class="on" title="Session view: clip launcher and mixer">Session</button><button data-view="arrange" title="Arrangement view: timeline">Arrange</button></div>
   <button id="btnAutoMix" class="automix" title="Auto-Mix setup: tell the app what each track is (or let it suggest), then it sets up EQ, compression and effects">Auto-Mix</button>
   <button id="btnEasy" class="tog" title="Easy Mode: fewer controls, bigger labels">Easy</button>
+  <button id="btnPerf" class="tog" title="Performance lock: session grid only. Hold to unlock." aria-pressed="false">Lock</button>
   <button id="btnHelp" class="tog" title="Help mode: tap any control to see what it does" aria-label="Help">?</button>
   <canvas id="masterScope" class="scope top" aria-label="Master waveform (oscilloscope)" title="Master output waveform"></canvas><canvas id="masterMeterTop" class="meter h top" aria-label="Master level"></canvas>
   <button id="btnMenu" class="menu-btn" aria-label="Menu" title="Menu: projects, export/import, settings, preferences"><svg class="ico ico-menu" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
@@ -45,6 +46,7 @@
   <section id="sessionView" class="view"></section>
   <section id="arrangeView" class="view" hidden></section>
 </main>
+<aside id="rigReadout" hidden aria-label="Arena and TouchDesigner readout"></aside>
 <section id="devicePanel">
   <div id="devHead" class="dev-head"></div>
   <div id="devices" class="devices"></div>

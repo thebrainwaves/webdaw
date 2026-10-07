@@ -685,3 +685,22 @@ body.phone .loop-brace { height: 18px; }
 .ph-loop button { min-height: 48px; min-width: 48px; border-radius: 6px; border: 1px solid #3a3150; background: #221c30; font-size: 16px; font-weight: 600; }
 .ph-loop button.on { background: var(--accent-deep); border-color: var(--accent-hi); color: #fff; }
 .ph-loop .ph-loop-toggle { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+
+#btnPerf.on { background: var(--play); color: #111; }
+#rigReadout { display: none; }
+body.perf-lock #rigReadout { display: block; background: #141414; border-top: 1px solid #222; padding: 8px 10px; font-size: 12px; max-height: 168px; overflow: auto; }
+body.perf-lock #rigReadout header { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+body.perf-lock #rigReadout header span, body.perf-lock .rig-wire, body.perf-lock .rig-row i { color: #9a9a9a; }
+body.perf-lock .rig-wire { margin: 0 0 6px; }
+body.perf-lock .rig-row { display: grid; grid-template-columns: 52px 1fr auto; gap: 6px; align-items: baseline; }
+body.perf-lock .rig-row i { grid-column: 2 / -1; }
+body.perf-lock .rig-row code { color: #d7d7d7; }
+body.perf-lock .rig-log { margin: 6px 0 0; padding-left: 16px; }
+body.perf-lock .views button[data-view="arrange"],
+body.perf-lock #btnAutoMix,
+body.perf-lock #btnMenu,
+body.perf-lock #btnHelp,
+body.perf-lock #btnEasy,
+body.perf-lock .hist,
+body.perf-lock #devicePanel,
+body.perf-lock #bpm { display: none !important; }

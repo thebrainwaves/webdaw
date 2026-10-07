@@ -12,6 +12,7 @@ import { detectTransients, quantizeBuffer } from './audio/timecorrect.js';
 import { TapTempo, detectBufferTempo, mixToMono } from './audio/tempo.js';
 import { drawWaveform, LivePeaks, drawScope as drawScopeLine } from './ui/waveform.js';
 import { createPhone, wantsPhone } from './ui/phone.js';
+import { createPerfLock } from './ui/perflock.js';
 import { createTutorial } from './ui/tutorial.js';
 import { icon, setIcon } from './ui/icons.js';
 import { BANDS } from './audio/adaptive.js';
@@ -901,7 +902,7 @@ async function onSlotClick(t, i, launch = false) {
     } else toast('Nothing was recorded.');
     return;
   }
-  if (t.slots[i]) { if (launch || t.slots[i].type === 'midi' || !t.slots[i].bufferId) engine.launchSlot(t, i); return; } // audio: tap = audition (see bindAudition)
+  if (t.slots[i]) { if (launch || t.slots[i].type === 'midi' || !t.slots[i].bufferId) { engine.launchSlot(t, i); perfLock.noteClip(t, i); } return; } // audio: tap = audition (see bindAudition)
   if (t.arm) {
     if (n.rec || SR) return toast('This track is already recording.');
     if (t.kind === 'midi') return startMidiSlotRecording(t, i);
@@ -955,9 +956,9 @@ function masterColumn() {
   hd.addEventListener('click', () => selectTrack('master'));
   col.append(hd);
   const slots = h('div', { class: 'slots' });
-  for (let i = 0; i < S.project.scenes; i++) slots.append(h('div', { class: 'slot scene', title: `Launch scene ${i + 1} (all clips in this row)`, onclick: () => { engine.resume(); engine.launchScene(i); haptic(8); } }, h('span', { class: 'play-ico' }, icon('play')), ` ${i + 1}`));
+  for (let i = 0; i < S.project.scenes; i++) slots.append(h('div', { class: 'slot scene', title: `Launch scene ${i + 1} (all clips in this row)`, onclick: () => { engine.resume(); engine.launchScene(i); perfLock.noteScene(i); haptic(8); } }, h('span', { class: 'play-ico' }, icon('play')), ` ${i + 1}`));
   col.append(slots);
-  col.append(h('button', { class: 'stop-clip', title: 'Stop all clips', onclick: () => engine.stopAllClips() }, icon('stop'), ' All'));
+  col.append(h('button', { class: 'stop-clip', title: 'Stop all clips', onclick: () => { engine.stopAllClips(); perfLock.noteStop(); } }, icon('stop'), ' All'));
   const strip = h('div', { class: 'strip' });
   const faderRow = h('div', { class: 'fader-row' });
   faderRow.append(createFader(S.project.master.volume, (v) => { history.push('Master volume', 'mvol'); S.project.master.volume = v; engine.syncMaster(); markDirty(); }));
@@ -1263,7 +1264,7 @@ function useTake(t, c, i) {
   change('Pick take', () => { Object.assign(c, c.takes[i]); c.take = i; engine.rescheduleTrack(t); });
   S.clipView = null; renderArrange(); renderDevices(); toast(`Using take ${i + 1} of ${c.takes.length}`, 1200);
 }
-function setView(v) { S.view = v; renderAll(); }
+function setView(v) { S.view = perfLock.guardView(v); renderAll(); if (perfLock.isOn()) perfLock.render(); }
 const snapOn = (ev) => prefs.snap !== false && !(ev && (ev.altKey || ev.shiftKey));
 function snapPos(pos, ev) { pos = Math.max(0, pos); if (!snapOn(ev)) return pos; const q = engine.beatDur; return Math.max(0, Math.round((pos - engine.gridOffset) / q) * q + engine.gridOffset); }
 function toggleSnap() { prefs.snap = prefs.snap === false; savePrefs(); $$('.snap-btn').forEach((b) => { b.classList.toggle('on', prefs.snap !== false); b.textContent = prefs.snap !== false ? 'Snap: on' : 'Snap: off'; }); toast(prefs.snap !== false ? 'Snap to beat grid on (hold Alt/Shift to place freely)' : 'Snap off — clips go exactly where you drop them', 1600); }
@@ -2360,6 +2361,7 @@ function bindUI() {
   $('#btnTempo').addEventListener('click', (e) => { e.stopPropagation(); if (tempoPop) closeTempoPop(); else tempoPopover(e.currentTarget); });
   $('#btnUndo').addEventListener('click', undo); $('#btnRedo').addEventListener('click', redo);
   $('#btnEasy').addEventListener('click', toggleEasy);
+  perfLock.bind($('#btnPerf'));
   $('#btnHelp').addEventListener('click', toggleHelp);
   $('#btnAutoMix').addEventListener('click', () => autoMixDialog());
   $('#bpm').addEventListener('change', (e) => {
@@ -2367,7 +2369,7 @@ function bindUI() {
     change('Tempo', () => { S.project.bpm = v; engine.updateBpmFx(); }); renderArrange();
   });
   $$('.views button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
-  $('#btnMenu').addEventListener('click', (e) => { e.stopPropagation(); const m = $('#menu'); const open = !m.classList.contains('open'); closeMenus(); if (open) { m.classList.add('open'); setTimeout(() => document.addEventListener('pointerdown', (ev) => { if (!ev.target.closest('#menu')) closeMenus(); }, { once: true }), 0); } });
+  $('#btnMenu').addEventListener('click', (e) => { e.stopPropagation(); if (perfLock.blockMenu()) return toast('Performance lock: grid only', 900); const m = $('#menu'); const open = !m.classList.contains('open'); closeMenus(); if (open) { m.classList.add('open'); setTimeout(() => document.addEventListener('pointerdown', (ev) => { if (!ev.target.closest('#menu')) closeMenus(); }, { once: true }), 0); } });
   $('#fileProject').addEventListener('change', (e) => { if (e.target.files[0]) importProject(e.target.files[0]); e.target.value = ''; });
   $('#fileAudio').addEventListener('change', (e) => { if (e.target.files.length) importAudioFiles([...e.target.files]); e.target.value = ''; });
   document.addEventListener('keydown', (e) => {
@@ -2442,6 +2444,7 @@ async function start() {
 
 // ------------------------------------------------------------------ phone mode
 async function saveAndShare() { await saveNow(); toast('Saved in this browser', 1200); await exportProject(); }
+const perfLock = createPerfLock({ toast, haptic });
 const phone = createPhone({
   S, engine, history, track, change, markDirty, renderAll, renderDevices, togglePlay, toggleRecord, toggleAutoRecord, toggleArm, addTrack, renameTrack,
   autoMixDialog, gate, lockBadge, EFFECT_TYPES, EASY_PARAMS, EFFECT_HELP, setParam, fmtParam, fmtPos, undo, redo, tapTempo, tempoPopover, prefsDialog,
